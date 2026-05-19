@@ -1,49 +1,52 @@
 import kleur from "kleur";
 
+const accent = (text: string): string => (kleur.enabled ? `\x1b[1m\x1b[38;2;244;63;94m${text}\x1b[22m\x1b[39m` : text);
+
 const styles = {
-  title: kleur.bold().cyan,
-  label: kleur.bold().white,
-  muted: kleur.gray,
+  command: accent,
+  label: kleur.bold,
+  option: kleur.gray,
+  muted: kleur.dim().white,
 };
+
+function commandSyntax(commands: string[], rest = ""): string {
+  return `${commands.map(styles.command).join(" ")}${rest ? ` ${styles.muted(rest)}` : ""}`;
+}
+
+function optionSyntax(option: string, rest = ""): string {
+  return `${styles.option(option)}${rest ? ` ${styles.muted(rest)}` : ""}`;
+}
+
+function printRow(rawLeft: string, styledLeft: string, description: string): void {
+  console.log(`  ${styledLeft}${" ".repeat(Math.max(1, 30 - rawLeft.length))}${description}`);
+}
 
 export function isHelpFlag(value?: string): boolean {
   return value === "-h" || value === "--help";
 }
 
 export function printMainHelp(): void {
-  console.log(`${styles.title("dinggy")} ${styles.muted("run iOS apps on real devices")}`);
+  console.log(`${styles.command("dinggy")} ${styles.muted("run iOS apps on real devices")}`);
   console.log("");
-  console.log(styles.label("Usage"));
-  console.log("  dinggy run [options]");
-  console.log("  dinggy devices");
-  console.log("  dinggy config [edit]");
-  console.log("  dinggy config [options]");
-  console.log("  dinggy clean [--force]");
+  console.log(`${styles.label("Usage")}:`);
+  printRow("dinggy", commandSyntax(["dinggy"]), "Build, install, and launch interactively");
+  printRow("dinggy run [options]", commandSyntax(["dinggy", "run"], "[options]"), "Build and launch with explicit values");
+  printRow("dinggy clean [--force]", commandSyntax(["dinggy", "clean"], "[--force]"), "Clean build cache");
   console.log("");
-  console.log(styles.label("Run options"));
-  console.log(`  ${styles.label("--device <id>")}          ${styles.muted("Device identifier to build and launch on.")}`);
-  console.log(`  ${styles.label("--scheme <name>")}        ${styles.muted("Xcode scheme.")}`);
-  console.log(`  ${styles.label("--workspace <path>")}     ${styles.muted("Xcode workspace.")}`);
-  console.log(`  ${styles.label("--project <path>")}       ${styles.muted("Xcode project.")}`);
-  console.log(`  ${styles.label("--derived-data <path>")}  ${styles.muted("DerivedData path. Default: .dinggy/DerivedData.")}`);
-  console.log(`  ${styles.label("--no-launch")}            ${styles.muted("Build and install without launching.")}`);
+  console.log(`${styles.label("Commands")}:`);
+  printRow("run", commandSyntax(["run"]), "Build, install, and launch on a device");
+  printRow("devices", commandSyntax(["devices"]), "List available physical devices");
+  printRow("config [edit]", commandSyntax(["config"], "[edit]"), "Print or update saved project config");
+  printRow("clean", commandSyntax(["clean"]), "Clean build cache");
+  printRow("help", commandSyntax(["help"]), "Print help text");
   console.log("");
-  console.log(styles.label("Config options"));
-  console.log(`  ${styles.label("--device <id>")}          ${styles.muted("Save preferred device identifier.")}`);
-  console.log(`  ${styles.label("--scheme <name>")}        ${styles.muted("Save preferred Xcode scheme.")}`);
-  console.log(`  ${styles.label("--workspace <path>")}     ${styles.muted("Save preferred Xcode workspace.")}`);
-  console.log(`  ${styles.label("--project <path>")}       ${styles.muted("Save preferred Xcode project.")}`);
-  console.log(`  ${styles.label("--derived-data <path>")}  ${styles.muted("Save DerivedData path.")}`);
-  console.log("");
-  console.log(styles.label("Clean options"));
-  console.log(`  ${styles.label("-f, --force")}           ${styles.muted("Clean build cache without prompting.")}`);
-  console.log("");
-  console.log(styles.label("Examples"));
-  console.log("  dinggy run");
-  console.log("  dinggy devices");
-  console.log("  dinggy config edit");
-  console.log("  dinggy config --device 00008110-... --scheme MyApp");
-  console.log("  dinggy clean");
-  console.log("  dinggy clean --force");
-  console.log("  dinggy run --device 00008110-... --scheme MyApp --workspace MyApp.xcworkspace");
+  console.log(`${styles.label("Options")}:`);
+  printRow("--device <id>", optionSyntax("--device", "<id>"), "Device identifier for run/config");
+  printRow("--scheme <name>", optionSyntax("--scheme", "<name>"), "Xcode scheme for run/config");
+  printRow("--workspace <path>", optionSyntax("--workspace", "<path>"), "Xcode workspace for run/config");
+  printRow("--project <path>", optionSyntax("--project", "<path>"), "Xcode project for run/config");
+  printRow("--derived-data <path>", optionSyntax("--derived-data", "<path>"), "DerivedData path for run/config");
+  printRow("--no-launch", optionSyntax("--no-launch"), "Build and install without launching");
+  printRow("--json", optionSyntax("--json"), "Print devices as JSON");
+  printRow("-f, --force", `${styles.option("-f")}, ${styles.option("--force")}`, "Clean build cache without prompting");
 }
