@@ -1,0 +1,31 @@
+src/help.ts
+  s_d0d0a40baa81cc::t_d25ccae07551c9 38-40,47
+  s_d0d0a40baa81cc::t_5527be4af7e9e6 21
+README.md
+  s_d0d0a40baa81cc::t_d25ccae07551c9 29-30,41
+src/index.ts
+  s_d0d0a40baa81cc::t_07a815246d2162 2,161-193
+  s_d0d0a40baa81cc::t_064da4f3d16a04 931-932,934,938,940,945-946,958
+  s_d0d0a40baa81cc::t_ebb97d7c2ff299 443-450
+  s_d0d0a40baa81cc::t_ba227bcacd3679 927-930,933,935-937,939,941-944,947-949,951-957,959-984,1017
+  s_d0d0a40baa81cc::t_4a81988efff6fb 950
+  s_d0d0a40baa81cc::t_aaa7f9d0b6a0fa 14,87-91,129-132
+skills/dinggy/SKILL.md
+  s_d0d0a40baa81cc::t_d25ccae07551c9 30-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "075323b5898b49fb51e25de43ac1dbc3096273b0",
+  "prompts": {},
+  "sessions": {
+    "s_d0d0a40baa81cc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e3d7d-9dd9-7c72-98db-3fc00619720c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jake Go <jake@notnotjake.com>"
+    }
+  }
+}
