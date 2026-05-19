@@ -1,0 +1,922 @@
+#!/usr/bin/env bun
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
+import * as p from "@clack/prompts";
+import kleur from "kleur";
+import { isHelpFlag, printMainHelp } from "./help";
+
+type CliOptions = {
+  device?: string;
+  scheme?: string;
+  workspace?: string;
+  project?: string;
+  derivedData?: string;
+  launch: boolean;
+  json: boolean;
+};
+
+type ParsedArgs = {
+  command: string;
+  options: CliOptions;
+  help: boolean;
+};
+
+type DinggyConfig = {
+  device?: {
+    id: string;
+    name?: string;
+    platform?: string;
+  };
+  workspace?: string;
+  project?: string;
+  scheme?: string;
+  derivedDataPath: string;
+};
+
+type Device = {
+  id: string;
+  name: string;
+  platform?: string;
+  modelName?: string;
+  osVersion?: string;
+  available: boolean;
+  simulator: boolean;
+};
+
+type XcodeTarget = {
+  kind: "workspace" | "project";
+  path: string;
+};
+
+type CommandResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+};
+
+type RollingLog = {
+  addLine: (line: string) => void;
+  clear: () => void;
+};
+
+class SilentExit extends Error {
+  constructor(readonly code: number) {
+    super("Silent exit");
+  }
+}
+
+const CONFIG_DIR = ".dinggy";
+const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+const DEFAULT_DERIVED_DATA = join(CONFIG_DIR, "DerivedData");
+
+const styles = {
+  title: (text: string) => kleur.bold().cyan(text),
+  label: (text: string) => kleur.bold().white(text),
+  muted: (text: string) => kleur.gray(text),
+  warn: (text: string) => kleur.yellow(text),
+  error: (text: string) => kleur.red(text),
+  success: (text: string) => kleur.green(text),
+};
+
+const runStyles = {
+  muted: (text: string) => kleur.dim(text),
+};
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const options: CliOptions = { launch: true, json: false };
+  const positional: string[] = [];
+  let help = false;
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (isHelpFlag(arg)) {
+      help = true;
+      continue;
+    }
+    if (arg === "--device") {
+      options.device = argv[++i];
+      continue;
+    }
+    if (arg === "--scheme") {
+      options.scheme = argv[++i];
+      continue;
+    }
+    if (arg === "--workspace") {
+      options.workspace = argv[++i];
+      continue;
+    }
+    if (arg === "--project") {
+      options.project = argv[++i];
+      continue;
+    }
+    if (arg === "--derived-data") {
+      options.derivedData = argv[++i];
+      continue;
+    }
+    if (arg === "--no-launch") {
+      options.launch = false;
+      continue;
+    }
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+    positional.push(arg);
+  }
+
+  return {
+    command: positional[0] ?? "run",
+    options,
+    help,
+  };
+}
+
+function logInfo(message: string): void {
+  console.log(`${styles.title("dinggy")} ${message}`);
+}
+
+function logError(message: string): void {
+  console.error(`${styles.error("error")} ${message}`);
+}
+
+function formatDuration(ms: number): string {
+  const seconds = ms / 1000;
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+function printRunLine(message: string): void {
+  console.log(`  ${message}`);
+}
+
+function printRunDetail(label: string, value: string): void {
+  console.log(`     ${runStyles.muted(`${label}: ${value}`)}`);
+}
+
+function launchEmoji(): string {
+  const roll = Math.random();
+  if (roll < 0.001) return "❤️";
+  if (roll < 0.801) return "🚀";
+  if (roll < 0.901) return "🤘";
+  if (roll < 0.951) return "🔥";
+  return "🎉";
+}
+
+function ensureDir(path: string): void {
+  if (!existsSync(path)) mkdirSync(path, { recursive: true });
+}
+
+function readConfig(): DinggyConfig {
+  if (!existsSync(CONFIG_PATH)) {
+    return { derivedDataPath: DEFAULT_DERIVED_DATA };
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<DinggyConfig>;
+    return {
+      ...parsed,
+      derivedDataPath: parsed.derivedDataPath || DEFAULT_DERIVED_DATA,
+    };
+  } catch {
+    return { derivedDataPath: DEFAULT_DERIVED_DATA };
+  }
+}
+
+function writeConfig(config: DinggyConfig): void {
+  ensureDir(CONFIG_DIR);
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function hasConfigUpdates(options: CliOptions): boolean {
+  return Boolean(options.device || options.scheme || options.workspace || options.project || options.derivedData);
+}
+
+function hasRunConfig(config: DinggyConfig, options: CliOptions): boolean {
+  return Boolean(
+    (options.workspace || options.project || config.workspace || config.project) &&
+      (options.scheme || config.scheme) &&
+      (options.device || config.device?.id),
+  );
+}
+
+function updateConfig(options: CliOptions): void {
+  const config = readConfig();
+  const nextConfig: DinggyConfig = {
+    ...config,
+    derivedDataPath: options.derivedData ?? config.derivedDataPath ?? DEFAULT_DERIVED_DATA,
+  };
+
+  if (options.device) {
+    nextConfig.device = { id: options.device };
+  }
+
+  if (options.scheme) {
+    nextConfig.scheme = options.scheme;
+  }
+
+  if (options.workspace && options.project) {
+    throw new Error("Pass either --workspace or --project, not both.");
+  }
+
+  if (options.workspace) {
+    nextConfig.workspace = options.workspace;
+    delete nextConfig.project;
+  }
+
+  if (options.project) {
+    nextConfig.project = options.project;
+    delete nextConfig.workspace;
+  }
+
+  writeConfig(nextConfig);
+  logInfo(`Saved ${styles.label(CONFIG_PATH)}.`);
+}
+
+async function runCommand(cmd: string[], options?: { cwd?: string; timeoutMs?: number }): Promise<CommandResult> {
+  const proc = Bun.spawn(cmd, {
+    cwd: options?.cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const timeoutMs = options?.timeoutMs ?? 0;
+  let timeoutId: Timer | null = null;
+  const timeout =
+    timeoutMs > 0
+      ? new Promise<"timeout">((resolveTimeout) => {
+          timeoutId = setTimeout(() => resolveTimeout("timeout"), timeoutMs);
+        })
+      : null;
+
+  const exited = timeout ? await Promise.race([proc.exited, timeout]) : await proc.exited;
+  if (timeoutId) clearTimeout(timeoutId);
+
+  if (exited === "timeout") {
+    proc.kill();
+  }
+
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  return {
+    exitCode: exited === "timeout" ? 124 : exited,
+    stdout,
+    stderr,
+  };
+}
+
+function extractJsonArray(value: string): unknown[] | null {
+  const lines = value.split(/\r?\n/);
+  const startLine = lines.findIndex((line) => line.trim() === "[");
+  const endLine = lines.findLastIndex((line) => line.trim() === "]");
+  if (startLine === -1 || endLine === -1 || endLine <= startLine) return null;
+
+  try {
+    const parsed = JSON.parse(lines.slice(startLine, endLine + 1).join("\n")) as unknown;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function listDevices(): Promise<Device[]> {
+  const result = await runCommand(["xcrun", "xcdevice", "list"], { timeoutMs: 15000 });
+  const devicesJson = extractJsonArray(`${result.stdout}\n${result.stderr}`);
+  if (!devicesJson) {
+    const details = (result.stderr || result.stdout).trim();
+    throw new Error(details || "Could not parse xcrun xcdevice list output.");
+  }
+
+  return devicesJson
+    .map((raw): Device | null => {
+      if (!raw || typeof raw !== "object") return null;
+      const item = raw as Record<string, unknown>;
+      const id = typeof item.identifier === "string" ? item.identifier : "";
+      const name = typeof item.name === "string" ? item.name : id;
+      if (!id || !name) return null;
+      return {
+        id,
+        name,
+        platform: typeof item.platform === "string" ? item.platform : undefined,
+        modelName: typeof item.modelName === "string" ? item.modelName : undefined,
+        osVersion: typeof item.operatingSystemVersion === "string" ? item.operatingSystemVersion : undefined,
+        available: item.available === true,
+        simulator: item.simulator === true,
+      };
+    })
+    .filter((device): device is Device => Boolean(device))
+    .filter((device) => {
+      const platform = device.platform ?? "";
+      return device.available && !device.simulator && platform.includes("iphoneos");
+    });
+}
+
+function formatDevice(device: Device): string {
+  const details = [device.modelName, device.osVersion].filter(Boolean).join(", ");
+  return details ? `${device.name} ${styles.muted(`(${details})`)}` : device.name;
+}
+
+function findXcodeTargets(cwd = process.cwd()): XcodeTarget[] {
+  const entries = readdirSync(cwd, { withFileTypes: true });
+  const targets: XcodeTarget[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.endsWith(".xcworkspace")) {
+      targets.push({ kind: "workspace", path: entry.name });
+    }
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.endsWith(".xcodeproj")) {
+      targets.push({ kind: "project", path: entry.name });
+    }
+  }
+
+  return targets.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "workspace" ? -1 : 1;
+    return a.path.localeCompare(b.path);
+  });
+}
+
+async function listSchemes(target: XcodeTarget): Promise<string[]> {
+  const args =
+    target.kind === "workspace"
+      ? ["xcodebuild", "-list", "-json", "-workspace", target.path]
+      : ["xcodebuild", "-list", "-json", "-project", target.path];
+  const result = await runCommand(args, { timeoutMs: 30000 });
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout).trim() || "xcodebuild -list failed.");
+  }
+
+  const parsed = JSON.parse(result.stdout) as {
+    workspace?: { schemes?: string[] };
+    project?: { schemes?: string[] };
+  };
+  return parsed.workspace?.schemes ?? parsed.project?.schemes ?? [];
+}
+
+function resolvePath(value: string): string {
+  return isAbsolute(value) ? value : resolve(process.cwd(), value);
+}
+
+function targetFromConfig(config: DinggyConfig, options: CliOptions): XcodeTarget | null {
+  const workspace = options.workspace ?? config.workspace;
+  const project = options.project ?? config.project;
+
+  if (workspace) return { kind: "workspace", path: workspace };
+  if (project) return { kind: "project", path: project };
+  return null;
+}
+
+function selectXcodeTarget(targets: XcodeTarget[], message = "Select Target"): Promise<XcodeTarget> {
+  return p
+    .select({
+      message,
+      options: targets.map((target) => ({
+        label: `${target.path} ${styles.muted(target.kind)}`,
+        value: `${target.kind}:${target.path}`,
+      })),
+    })
+    .then((selected) => {
+      if (p.isCancel(selected)) {
+        p.cancel("Cancelled.");
+        process.exit(1);
+      }
+
+      const [kind, ...pathParts] = String(selected).split(":");
+      return { kind: kind as XcodeTarget["kind"], path: pathParts.join(":") };
+    });
+}
+
+function detectXcodeTarget(config: DinggyConfig, options: CliOptions = { launch: true, json: false }): XcodeTarget | null {
+  const configured = targetFromConfig(config, options);
+  if (configured) return configured;
+
+  const targets = findXcodeTargets();
+  if (targets.length === 0) {
+    return null;
+  }
+  return targets[0] ?? null;
+}
+
+function resolveTarget(config: DinggyConfig, options: CliOptions): XcodeTarget {
+  const configured = targetFromConfig(config, options);
+  if (!configured) {
+    throw new Error("No Xcode workspace or project configured. Run dinggy config edit.");
+  }
+  return configured;
+}
+
+function resolveScheme(config: DinggyConfig, options: CliOptions): string {
+  const configured = options.scheme ?? config.scheme;
+  if (!configured) {
+    throw new Error("No scheme configured. Run dinggy config edit.");
+  }
+  return configured;
+}
+
+async function selectScheme(target: XcodeTarget): Promise<string> {
+  const schemes = await listSchemes(target);
+  if (schemes.length === 0) {
+    throw new Error(`No shared schemes found in ${target.path}.`);
+  }
+  if (schemes.length === 1) return schemes[0] ?? "";
+
+  const selected = await p.select({
+    message: "Select Scheme",
+    options: schemes.map((scheme) => ({ label: scheme, value: scheme })),
+  });
+  if (p.isCancel(selected)) {
+    p.cancel("Cancelled.");
+    process.exit(1);
+  }
+  return String(selected);
+}
+
+function resolveDevice(config: DinggyConfig, options: CliOptions): Device {
+  const configuredId = options.device ?? config.device?.id;
+  if (!configuredId) {
+    throw new Error("No device configured. Run dinggy config edit.");
+  }
+
+  return {
+    id: configuredId,
+    name: options.device === configuredId ? config.device?.name ?? configuredId : config.device?.name ?? configuredId,
+    platform: config.device?.platform,
+    available: true,
+    simulator: false,
+  };
+}
+
+async function selectDevice(devices: Device[]): Promise<Device> {
+  if (devices.length === 1) return devices[0];
+
+  const selected = await p.select({
+    message: "Select Device",
+    options: devices.map((device) => ({
+      label: formatDevice(device),
+      value: device.id,
+      hint: device.platform,
+    })),
+  });
+  if (p.isCancel(selected)) {
+    p.cancel("Cancelled.");
+    process.exit(1);
+  }
+
+  const device = devices.find((candidate) => candidate.id === selected);
+  if (!device) throw new Error("Selected device disappeared.");
+  return device;
+}
+
+async function promptForDerivedDataPath(config: DinggyConfig): Promise<string> {
+  const selected = await p.text({
+    message: "DerivedData path",
+    initialValue: config.derivedDataPath || DEFAULT_DERIVED_DATA,
+    placeholder: DEFAULT_DERIVED_DATA,
+  });
+  if (p.isCancel(selected)) {
+    p.cancel("Cancelled.");
+    process.exit(1);
+  }
+
+  const value = String(selected).trim();
+  return value || DEFAULT_DERIVED_DATA;
+}
+
+function describeTarget(target: XcodeTarget): string {
+  return `${target.path} (${target.kind})`;
+}
+
+async function reviewProjectSettings(target: XcodeTarget, config: DinggyConfig): Promise<{
+  target: XcodeTarget;
+  derivedDataPath: string;
+}> {
+  const derivedDataPath = config.derivedDataPath || DEFAULT_DERIVED_DATA;
+
+  const selected = await p.select({
+    message: `Target: ${describeTarget(target)}\nBuilds: ${derivedDataPath}`,
+    options: [
+      { label: "Accept Project Settings", value: "accept" },
+      { label: "Modify Project Settings", value: "modify" },
+    ],
+  });
+  if (p.isCancel(selected)) {
+    p.cancel("Cancelled.");
+    process.exit(1);
+  }
+
+  if (selected === "accept") {
+    return { target, derivedDataPath };
+  }
+
+  const targets = findXcodeTargets();
+  if (targets.length === 0) {
+    throw new Error("No .xcworkspace or .xcodeproj found in the current directory.");
+  }
+  const nextTarget = await selectXcodeTarget(targets, "Select Target");
+  const nextDerivedDataPath = await promptForDerivedDataPath({ ...config, derivedDataPath });
+  return { target: nextTarget, derivedDataPath: nextDerivedDataPath };
+}
+
+async function configureProject(): Promise<DinggyConfig> {
+  const config = readConfig();
+  const deviceScan = listDevices().then(
+    (devices) => ({ devices, error: null }),
+    (error: unknown) => ({ devices: null, error }),
+  );
+  const detectedTarget = detectXcodeTarget(config);
+  if (!detectedTarget) {
+    throw new Error("No .xcworkspace or .xcodeproj found in the current directory.");
+  }
+
+  let target = detectedTarget;
+  let scheme = await selectScheme(target);
+  const projectSettings = await reviewProjectSettings(target, config);
+
+  if (projectSettings.target.kind !== target.kind || projectSettings.target.path !== target.path) {
+    target = projectSettings.target;
+    scheme = await selectScheme(target);
+  }
+
+  const deviceResult = await deviceScan;
+  if (deviceResult.error) throw deviceResult.error;
+  const device = await selectDevice(deviceResult.devices ?? []);
+  const derivedDataPath = projectSettings.derivedDataPath;
+
+  const nextConfig: DinggyConfig = {
+    device: {
+      id: device.id,
+      name: device.name,
+      platform: device.platform,
+    },
+    scheme,
+    derivedDataPath,
+    [target.kind]: target.path,
+  };
+  writeConfig(nextConfig);
+  logInfo(`is ready! ${styles.muted(`saved ${CONFIG_PATH}`)}`);
+  return nextConfig;
+}
+
+function appBundleNameFromScheme(scheme: string): string {
+  const cleaned = basename(scheme, extname(scheme)).replace(/[^A-Za-z0-9_.-]/g, "");
+  return `${cleaned}.app`;
+}
+
+function appPath(config: DinggyConfig, scheme: string): string {
+  return join(resolvePath(config.derivedDataPath), "Build", "Products", "Debug-iphoneos", appBundleNameFromScheme(scheme));
+}
+
+function parseBuildSetting(output: string, key: string): string | null {
+  const lines = output.split(/\r?\n/);
+  let value: string | null = null;
+
+  for (const line of lines) {
+    const match = line.match(new RegExp(`^\\s*${key}\\s*=\\s*(.+)$`));
+    if (match?.[1]) value = match[1].trim();
+  }
+
+  return value;
+}
+
+function visibleText(value: string, width: number): string {
+  const clean = value.replace(/\x1b\[[0-9;]*m/g, "");
+  if (clean.length <= width) return value;
+  return `${clean.slice(0, Math.max(0, width - 1))}…`;
+}
+
+function createBuildLog(startedAt: number, rowCount = 3): RollingLog {
+  if (!process.stdout.isTTY) {
+    return {
+      addLine: (line: string) => process.stdout.write(`${line}\n`),
+      clear: () => {},
+    };
+  }
+
+  const lines: string[] = [];
+  let rendered = false;
+  let timer: Timer | null = null;
+
+  function render(): void {
+    const width = process.stdout.columns || 100;
+    const totalRows = rowCount + 1;
+    if (rendered) process.stdout.write(`\x1b[${totalRows}A`);
+
+    const visibleLines = lines.slice(-rowCount);
+    const paddedLines = [
+      ...Array.from({ length: Math.max(0, rowCount - visibleLines.length) }, () => ""),
+      ...visibleLines,
+    ];
+
+    process.stdout.write(
+      `\x1b[2K\r${kleur.bold().gray(formatDuration(Date.now() - startedAt))}\n`,
+    );
+    for (const line of paddedLines) {
+      process.stdout.write(`\x1b[2K\r${runStyles.muted(visibleText(line, width))}\n`);
+    }
+    rendered = true;
+  }
+
+  render();
+  timer = setInterval(render, 100);
+
+  return {
+    addLine(line: string) {
+      const trimmed = line.trimEnd();
+      if (!trimmed) return;
+      lines.push(trimmed);
+      render();
+    },
+    clear() {
+      if (timer) clearInterval(timer);
+      if (!rendered) return;
+      const totalRows = rowCount + 1;
+      process.stdout.write(`\x1b[${totalRows}A`);
+      for (let i = 0; i < totalRows; i += 1) {
+        process.stdout.write("\x1b[2K\r");
+        if (i < totalRows - 1) process.stdout.write("\x1b[1B");
+      }
+      process.stdout.write(`\x1b[${totalRows - 1}A`);
+      rendered = false;
+    },
+  };
+}
+
+function createLiveStatus(): { set: (message: string) => void; clear: () => void } {
+  if (!process.stdout.isTTY) {
+    return {
+      set: (message: string) => printRunLine(runStyles.muted(message)),
+      clear: () => {},
+    };
+  }
+
+  let rendered = false;
+  return {
+    set(message: string) {
+      if (rendered) process.stdout.write("\x1b[1A");
+      process.stdout.write(`\x1b[2K\r  ${runStyles.muted(message)}\n`);
+      rendered = true;
+    },
+    clear() {
+      if (!rendered) return;
+      process.stdout.write("\x1b[1A\x1b[2K\r");
+      rendered = false;
+    },
+  };
+}
+
+async function streamBuildOutput(
+  stream: ReadableStream<Uint8Array> | null,
+  rollingLog: RollingLog,
+  tail: string[],
+): Promise<void> {
+  if (!stream) return;
+
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffered += decoder.decode(value, { stream: true });
+    const parts = buffered.split(/\r?\n/);
+    buffered = parts.pop() ?? "";
+
+    for (const line of parts) {
+      rollingLog.addLine(line);
+      if (line.trim()) tail.push(line);
+      if (tail.length > 40) tail.shift();
+    }
+  }
+
+  buffered += decoder.decode();
+  if (buffered.trim()) {
+    rollingLog.addLine(buffered);
+    tail.push(buffered);
+    if (tail.length > 40) tail.shift();
+  }
+}
+
+async function resolveBuiltAppPath(target: XcodeTarget, scheme: string, device: Device, config: DinggyConfig): Promise<string> {
+  const guessedPath = appPath(config, scheme);
+  if (existsSync(guessedPath)) return guessedPath;
+
+  const args = [
+    "xcodebuild",
+    target.kind === "workspace" ? "-workspace" : "-project",
+    target.path,
+    "-scheme",
+    scheme,
+    "-destination",
+    `id=${device.id}`,
+    "-derivedDataPath",
+    config.derivedDataPath,
+    "-showBuildSettings",
+  ];
+  const result = await runCommand(args, { timeoutMs: 30000 });
+  if (result.exitCode === 0) {
+    const targetBuildDir = parseBuildSetting(result.stdout, "TARGET_BUILD_DIR");
+    const wrapperName = parseBuildSetting(result.stdout, "WRAPPER_NAME");
+    if (targetBuildDir && wrapperName) {
+      const resolvedPath = join(targetBuildDir, wrapperName);
+      if (existsSync(resolvedPath)) return resolvedPath;
+    }
+  }
+
+  throw new Error(`Built app not found. Checked ${guessedPath} and xcodebuild build settings.`);
+}
+
+async function buildApp(target: XcodeTarget, scheme: string, device: Device, derivedDataPath: string): Promise<void> {
+  const args = [
+    "xcodebuild",
+    target.kind === "workspace" ? "-workspace" : "-project",
+    target.path,
+    "-scheme",
+    scheme,
+    "-destination",
+    `id=${device.id}`,
+    "-derivedDataPath",
+    derivedDataPath,
+    "build",
+  ];
+
+  const startedAt = Date.now();
+  console.log("");
+  logInfo(`Building ${styles.label(scheme)} for ${styles.label(device.name)}...`);
+
+  const rollingLog = createBuildLog(startedAt);
+  const tail: string[] = [];
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const [exitCode] = await Promise.all([
+    proc.exited,
+    streamBuildOutput(proc.stdout, rollingLog, tail),
+    streamBuildOutput(proc.stderr, rollingLog, tail),
+  ]);
+
+  rollingLog.clear();
+  if (exitCode !== 0) {
+    printRunLine(styles.error(kleur.bold(`✕ Build Failed in ${formatDuration(Date.now() - startedAt)}`)));
+    printRunDetail("xcodebuild", `exited with code ${exitCode}`);
+    throw new SilentExit(1);
+  }
+  printRunLine(styles.success(kleur.bold(`✓ Build Completed in ${formatDuration(Date.now() - startedAt)}`)));
+}
+
+async function installApp(device: Device, app: string, status = createLiveStatus()): Promise<void> {
+  status.set(`Installing on ${device.name}`);
+  const result = await runCommand(["xcrun", "devicectl", "device", "install", "app", "--device", device.id, app], {
+    timeoutMs: 120000,
+  });
+  status.clear();
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout).trim() || "devicectl install failed.");
+  }
+}
+
+async function bundleIdentifier(app: string): Promise<string> {
+  const plist = join(app, "Info.plist");
+  const result = await runCommand(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", plist]);
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout).trim() || "Could not read CFBundleIdentifier.");
+  }
+  return result.stdout.trim();
+}
+
+async function launchApp(device: Device, bundleId: string, status = createLiveStatus()): Promise<void> {
+  status.set(`Launching on ${device.name}`);
+  const result = await runCommand(["xcrun", "devicectl", "device", "process", "launch", "--device", device.id, bundleId], {
+    timeoutMs: 60000,
+  });
+  status.clear();
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout).trim() || "devicectl launch failed.");
+  }
+}
+
+async function run(options: CliOptions): Promise<void> {
+  const runStartedAt = Date.now();
+  let config = readConfig();
+  if (!hasRunConfig(config, options)) {
+    config = await configureProject();
+  }
+
+  const target = resolveTarget(config, options);
+  const scheme = resolveScheme(config, options);
+  const device = resolveDevice(config, options);
+  const derivedDataPath = options.derivedData ?? config.derivedDataPath ?? DEFAULT_DERIVED_DATA;
+
+  const nextConfig: DinggyConfig = {
+    device: {
+      id: device.id,
+      name: device.name,
+      platform: device.platform,
+    },
+    scheme,
+    derivedDataPath,
+    [target.kind]: target.path,
+  };
+  writeConfig(nextConfig);
+
+  ensureDir(dirname(derivedDataPath));
+  await buildApp(target, scheme, device, derivedDataPath);
+
+  const builtApp = await resolveBuiltAppPath(target, scheme, device, nextConfig);
+  const status = createLiveStatus();
+
+  await installApp(device, builtApp, status);
+  const bundleId = await bundleIdentifier(builtApp);
+
+  if (options.launch) {
+    await launchApp(device, bundleId, status);
+    printRunLine(kleur.bold(`✓ App Launched in ${formatDuration(Date.now() - runStartedAt)} ${launchEmoji()}`));
+  } else {
+    printRunLine(styles.success(kleur.bold(`✓ App Installed in ${formatDuration(Date.now() - runStartedAt)}`)));
+  }
+
+  printRunDetail("Bundle ID", bundleId);
+  printRunDetail("Target", device.name);
+}
+
+async function printDevices(options: CliOptions): Promise<void> {
+  const devices = await listDevices();
+  if (options.json) {
+    console.log(JSON.stringify(devices, null, 2));
+    return;
+  }
+
+  if (devices.length === 0) {
+    console.log(styles.muted("No available physical devices found."));
+    return;
+  }
+
+  for (const device of devices) {
+    console.log(`${styles.label(device.id)}  ${formatDevice(device)}`);
+  }
+}
+
+function printConfig(): void {
+  console.log(JSON.stringify(readConfig(), null, 2));
+}
+
+async function main(): Promise<void> {
+  const { command, options, help } = parseArgs(process.argv.slice(2));
+  if (help || command === "help") {
+    printMainHelp();
+    return;
+  }
+
+  if (command === "run") {
+    await run(options);
+    return;
+  }
+
+  if (command === "devices") {
+    await printDevices(options);
+    return;
+  }
+
+  if (command === "config") {
+    const configCommand = process.argv.slice(2)[1];
+    if (configCommand === "edit") {
+      await configureProject();
+      return;
+    }
+    if (hasConfigUpdates(options)) {
+      updateConfig(options);
+      return;
+    }
+    printConfig();
+    return;
+  }
+
+  if (command === "clean") {
+    rmSync(CONFIG_DIR, { recursive: true, force: true });
+    logInfo("Removed .dinggy config and build artifacts.");
+    return;
+  }
+
+  throw new Error(`Unknown command: ${command}`);
+}
+
+main().catch((error: unknown) => {
+  if (error instanceof SilentExit) {
+    process.exit(error.code);
+  }
+  logError(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

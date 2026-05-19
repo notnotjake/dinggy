@@ -1,0 +1,21 @@
+{
+  "name": "dinggy",
+  "version": "0.1.0",
+  "description": "Run iOS apps on real devices from the command line.",
+  "type": "module",
+  "bin": {
+    "dinggy": "src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.0.0",
+    "kleur": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3"
+  }
+}
