@@ -26,7 +26,8 @@ bun link
 | `dinggy config` | Print the project `.dinggy/config.json`. |
 | `dinggy config edit` | Run interactive config again and save new choices. |
 | `dinggy config --device <id>` | Update one or more config values non-interactively. |
-| `dinggy clean` | Remove `.dinggy`, including config and DerivedData. |
+| `dinggy clean` | Interactively clean build cache and optionally config. |
+| `dinggy clean --force` | Remove DerivedData/build cache without prompting. |
 | `dinggy help` | Show help. |
 
 ## Agent usage
@@ -37,6 +38,7 @@ For noninteractive use, pass the values that would otherwise be prompted:
 dinggy run --device <device-id> --scheme <scheme> --workspace App.xcworkspace
 dinggy run --device <device-id> --scheme <scheme> --project App.xcodeproj
 dinggy config --device <device-id> --scheme <scheme> --workspace App.xcworkspace
+dinggy clean --force
 ```
 
 By default build artifacts go to `.dinggy/DerivedData`.

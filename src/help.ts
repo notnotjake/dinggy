@@ -18,7 +18,7 @@ export function printMainHelp(): void {
   console.log("  dinggy devices");
   console.log("  dinggy config [edit]");
   console.log("  dinggy config [options]");
-  console.log("  dinggy clean");
+  console.log("  dinggy clean [--force]");
   console.log("");
   console.log(styles.label("Run options"));
   console.log(`  ${styles.label("--device <id>")}          ${styles.muted("Device identifier to build and launch on.")}`);
@@ -35,11 +35,15 @@ export function printMainHelp(): void {
   console.log(`  ${styles.label("--project <path>")}       ${styles.muted("Save preferred Xcode project.")}`);
   console.log(`  ${styles.label("--derived-data <path>")}  ${styles.muted("Save DerivedData path.")}`);
   console.log("");
+  console.log(styles.label("Clean options"));
+  console.log(`  ${styles.label("-f, --force")}           ${styles.muted("Clean build cache without prompting.")}`);
+  console.log("");
   console.log(styles.label("Examples"));
   console.log("  dinggy run");
   console.log("  dinggy devices");
   console.log("  dinggy config edit");
   console.log("  dinggy config --device 00008110-... --scheme MyApp");
   console.log("  dinggy clean");
+  console.log("  dinggy clean --force");
   console.log("  dinggy run --device 00008110-... --scheme MyApp --workspace MyApp.xcworkspace");
 }

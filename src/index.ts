@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 import * as p from "@clack/prompts";
 import kleur from "kleur";
@@ -11,6 +11,7 @@ type CliOptions = {
   workspace?: string;
   project?: string;
   derivedData?: string;
+  force: boolean;
   launch: boolean;
   json: boolean;
 };
@@ -83,7 +84,11 @@ const runStyles = {
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const options: CliOptions = { launch: true, json: false };
+  const options: CliOptions = {
+    force: false,
+    launch: true,
+    json: false,
+  };
   const positional: string[] = [];
   let help = false;
 
@@ -121,6 +126,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       options.json = true;
       continue;
     }
+    if (arg === "-f" || arg === "--force") {
+      options.force = true;
+      continue;
+    }
     positional.push(arg);
   }
 
@@ -147,6 +156,41 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return `${minutes}m ${remainingSeconds}s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const precision = value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function directorySize(path: string): number {
+  if (!existsSync(path)) return 0;
+
+  const stats = statSync(path);
+  if (!stats.isDirectory()) return stats.size;
+
+  let total = 0;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const entryPath = join(path, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      total += directorySize(entryPath);
+      continue;
+    }
+    total += statSync(entryPath).size;
+  }
+
+  return total;
 }
 
 function printRunLine(message: string): void {
@@ -396,7 +440,14 @@ function selectXcodeTarget(targets: XcodeTarget[], message = "Select Target"): P
     });
 }
 
-function detectXcodeTarget(config: DinggyConfig, options: CliOptions = { launch: true, json: false }): XcodeTarget | null {
+function detectXcodeTarget(
+  config: DinggyConfig,
+  options: CliOptions = {
+    force: false,
+    launch: true,
+    json: false,
+  },
+): XcodeTarget | null {
   const configured = targetFromConfig(config, options);
   if (configured) return configured;
 
@@ -873,6 +924,64 @@ function printConfig(): void {
   console.log(JSON.stringify(readConfig(), null, 2));
 }
 
+type CleanTarget = "build-cache" | "config";
+
+function cleanBuildCache(config: DinggyConfig): void {
+  const derivedDataPath = resolvePath(config.derivedDataPath || DEFAULT_DERIVED_DATA);
+  const size = directorySize(derivedDataPath);
+  printRunLine(runStyles.muted("Removing Build Cache"));
+  rmSync(derivedDataPath, { recursive: true, force: true });
+  printRunLine(styles.success(kleur.bold(`✓ Removed ${formatBytes(size)} ${runStyles.muted(derivedDataPath)}`)));
+}
+
+function cleanConfig(): void {
+  printRunLine(runStyles.muted("Removing Config"));
+  rmSync(CONFIG_PATH, { force: true });
+  printRunLine(styles.success(kleur.bold(`✓ Removed Config ${runStyles.muted(CONFIG_PATH)}`)));
+}
+
+async function clean(options: CliOptions): Promise<void> {
+  const config = readConfig();
+  const derivedDataPath = resolvePath(config.derivedDataPath || DEFAULT_DERIVED_DATA);
+  const buildCacheSize = directorySize(derivedDataPath);
+  let targets: CleanTarget[] = ["build-cache"];
+
+  if (options.force) {
+    targets = ["build-cache"];
+  } else {
+    const selected = await p.multiselect<CleanTarget>({
+      message: "Select what to clean",
+      options: [
+        {
+          label: "Build cache",
+          value: "build-cache",
+          hint: `${formatBytes(buildCacheSize)} ${config.derivedDataPath || DEFAULT_DERIVED_DATA}`,
+        },
+        {
+          label: "Config",
+          value: "config",
+          hint: CONFIG_PATH,
+        },
+      ],
+      initialValues: ["build-cache"],
+      required: false,
+    });
+    if (p.isCancel(selected)) {
+      p.cancel("Cancelled.");
+      process.exit(1);
+    }
+    targets = selected;
+  }
+
+  if (targets.length === 0) {
+    logInfo("Nothing selected.");
+    return;
+  }
+
+  if (targets.includes("build-cache")) cleanBuildCache(config);
+  if (targets.includes("config")) cleanConfig();
+}
+
 async function main(): Promise<void> {
   const { command, options, help } = parseArgs(process.argv.slice(2));
   if (help || command === "help") {
@@ -905,8 +1014,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "clean") {
-    rmSync(CONFIG_DIR, { recursive: true, force: true });
-    logInfo("Removed .dinggy config and build artifacts.");
+    await clean(options);
     return;
   }
 

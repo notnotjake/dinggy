@@ -27,7 +27,9 @@ It stores project-local preferences in `.dinggy/config.json`, including the pref
 
 `dinggy config --device <id> --scheme <scheme> --workspace <path>` updates config values non-interactively. Pass only the fields that should change. Use `--project <path>` instead of `--workspace <path>` for project-only apps.
 
-`dinggy clean` removes `.dinggy`, including config and DerivedData build artifacts.
+`dinggy clean` interactively asks what to clean with a multi-select menu. Build cache is selected by default; config is not selected by default.
+
+`dinggy clean --force` removes the configured DerivedData/build cache without prompting and preserves config.
 
 ## Agent Workflow
 
