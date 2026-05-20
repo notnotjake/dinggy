@@ -26,19 +26,20 @@ export function isHelpFlag(value?: string): boolean {
 }
 
 export function printMainHelp(): void {
-  console.log(`${styles.command("dinggy")} ${styles.muted("run iOS apps on real devices")}`);
+  console.log(`${styles.command("dinggy")} ${styles.muted("run your apps without opening Xcode")}`);
   console.log("");
   console.log(`${styles.label("Usage")}:`);
   printRow("dinggy", commandSyntax(["dinggy"]), "Build, install, and launch interactively");
   printRow("dinggy run [options]", commandSyntax(["dinggy", "run"], "[options]"), "Build and launch with explicit values");
-  printRow("dinggy clean [--force]", commandSyntax(["dinggy", "clean"], "[--force]"), "Clean build cache");
+  printRow("dinggy config [options]", commandSyntax(["dinggy", "config"], "[options]"), "Configure interactively or update fields");
+  printRow("dinggy clean [--force]", commandSyntax(["dinggy", "clean"], "[--force]"), "Clean build cache and build logs");
   console.log("");
   console.log(`${styles.label("Commands")}:`);
-  printRow("run", commandSyntax(["run"]), "Build, install, and launch on a device");
+  printRow("run [options]", commandSyntax(["run"], "[options]"), "Build, install, and launch on a device");
   printRow("devices", commandSyntax(["devices"]), "List available physical devices");
-  printRow("config [edit]", commandSyntax(["config"], "[edit]"), "Print or update saved project config");
-  printRow("clean", commandSyntax(["clean"]), "Clean build cache");
-  printRow("help", commandSyntax(["help"]), "Print help text");
+  printRow("config [options]", commandSyntax(["config"], "[options]"), "Configure interactively or update saved fields");
+  printRow("info", commandSyntax(["info"]), "Print saved project config");
+  printRow("clean [--force]", commandSyntax(["clean"], "[--force]"), "Clean build cache and build logs");
   console.log("");
   console.log(`${styles.label("Options")}:`);
   printRow("--device <id>", optionSyntax("--device", "<id>"), "Device identifier for run/config");
@@ -48,5 +49,5 @@ export function printMainHelp(): void {
   printRow("--derived-data <path>", optionSyntax("--derived-data", "<path>"), "DerivedData path for run/config");
   printRow("--no-launch", optionSyntax("--no-launch"), "Build and install without launching");
   printRow("--json", optionSyntax("--json"), "Print devices as JSON");
-  printRow("-f, --force", `${styles.option("-f")}, ${styles.option("--force")}`, "Clean build cache without prompting");
+  printRow("-f, --force", `${styles.option("-f")}, ${styles.option("--force")}`, "Clean build cache and build logs without prompting");
 }

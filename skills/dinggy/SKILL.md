@@ -21,9 +21,9 @@ It stores project-local preferences in `.dinggy/config.json`, including the pref
 
 `dinggy run --no-launch` builds and installs without launching.
 
-`dinggy config` prints the current project config.
+`dinggy config` runs interactive config and saves a new preferred device, workspace or project, scheme, and DerivedData path.
 
-`dinggy config edit` runs interactive config again and saves a new preferred device, workspace or project, scheme, and DerivedData path.
+`dinggy info` prints the current project config.
 
 `dinggy config --device <id> --scheme <scheme> --workspace <path>` updates config values non-interactively. Pass only the fields that should change. Use `--project <path>` instead of `--workspace <path>` for project-only apps.
 

@@ -60,6 +60,17 @@ type RollingLog = {
   clear: () => void;
 };
 
+type BuildOutputControl = {
+  active: boolean;
+};
+
+type DeviceDiagnostic = {
+  devices: Device[];
+  matchingDevice?: Device;
+  issue?: string;
+  scanError?: string;
+};
+
 class SilentExit extends Error {
   constructor(readonly code: number) {
     super("Silent exit");
@@ -69,6 +80,7 @@ class SilentExit extends Error {
 const CONFIG_DIR = ".dinggy";
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const DEFAULT_DERIVED_DATA = join(CONFIG_DIR, "DerivedData");
+const BUILD_LOG_DIR = join(CONFIG_DIR, "build-logs");
 
 const styles = {
   title: (text: string) => kleur.bold().cyan(text),
@@ -329,7 +341,7 @@ function extractJsonArray(value: string): unknown[] | null {
   }
 }
 
-async function listDevices(): Promise<Device[]> {
+async function scanDevices(): Promise<Device[]> {
   const result = await runCommand(["xcrun", "xcdevice", "list"], { timeoutMs: 15000 });
   const devicesJson = extractJsonArray(`${result.stdout}\n${result.stderr}`);
   if (!devicesJson) {
@@ -354,16 +366,64 @@ async function listDevices(): Promise<Device[]> {
         simulator: item.simulator === true,
       };
     })
-    .filter((device): device is Device => Boolean(device))
-    .filter((device) => {
-      const platform = device.platform ?? "";
-      return device.available && !device.simulator && platform.includes("iphoneos");
-    });
+    .filter((device): device is Device => Boolean(device));
+}
+
+async function listDevices(): Promise<Device[]> {
+  const devices = await scanDevices();
+  return devices.filter((device) => {
+    const platform = device.platform ?? "";
+    return device.available && !device.simulator && platform.includes("iphoneos");
+  });
 }
 
 function formatDevice(device: Device): string {
   const details = [device.modelName, device.osVersion].filter(Boolean).join(", ");
   return details ? `${device.name} ${styles.muted(`(${details})`)}` : device.name;
+}
+
+function formatDeviceIdentity(device: Device): string {
+  return `${device.name} ${styles.muted(`(${device.id})`)}`;
+}
+
+function deviceUnavailableReason(device: Device): string | null {
+  if (!device.available) return "it is not currently available";
+  if (device.simulator) return "it is a simulator, not a physical device";
+  const platform = device.platform ?? "";
+  if (!platform.includes("iphoneos")) return `its platform is ${platform || "unknown"}, not iphoneos`;
+  return null;
+}
+
+function diagnoseDevice(device: Device, devices: Device[]): DeviceDiagnostic {
+  const matchingDevice = devices.find((candidate) => candidate.id === device.id);
+  if (!matchingDevice) {
+    return {
+      devices,
+      issue: `${device.name} is not available`,
+    };
+  }
+
+  const reason = deviceUnavailableReason(matchingDevice);
+  if (reason) {
+    return {
+      devices,
+      matchingDevice,
+      issue: `${matchingDevice.name} is not available`,
+    };
+  }
+
+  return { devices, matchingDevice };
+}
+
+async function scanSelectedDevice(device: Device): Promise<DeviceDiagnostic> {
+  try {
+    return diagnoseDevice(device, await scanDevices());
+  } catch (error) {
+    return {
+      devices: [],
+      scanError: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function findXcodeTargets(cwd = process.cwd()): XcodeTarget[] {
@@ -461,7 +521,7 @@ function detectXcodeTarget(
 function resolveTarget(config: DinggyConfig, options: CliOptions): XcodeTarget {
   const configured = targetFromConfig(config, options);
   if (!configured) {
-    throw new Error("No Xcode workspace or project configured. Run dinggy config edit.");
+    throw new Error("No Xcode workspace or project configured. Run dinggy config.");
   }
   return configured;
 }
@@ -469,7 +529,7 @@ function resolveTarget(config: DinggyConfig, options: CliOptions): XcodeTarget {
 function resolveScheme(config: DinggyConfig, options: CliOptions): string {
   const configured = options.scheme ?? config.scheme;
   if (!configured) {
-    throw new Error("No scheme configured. Run dinggy config edit.");
+    throw new Error("No scheme configured. Run dinggy config.");
   }
   return configured;
 }
@@ -495,7 +555,7 @@ async function selectScheme(target: XcodeTarget): Promise<string> {
 function resolveDevice(config: DinggyConfig, options: CliOptions): Device {
   const configuredId = options.device ?? config.device?.id;
   if (!configuredId) {
-    throw new Error("No device configured. Run dinggy config edit.");
+    throw new Error("No device configured. Run dinggy config.");
   }
 
   return {
@@ -640,9 +700,17 @@ function parseBuildSetting(output: string, key: string): string | null {
 }
 
 function visibleText(value: string, width: number): string {
-  const clean = value.replace(/\x1b\[[0-9;]*m/g, "");
-  if (clean.length <= width) return value;
-  return `${clean.slice(0, Math.max(0, width - 1))}…`;
+  const clean = value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+  const maxWidth = Math.max(1, Math.min(width, 100) - 4);
+  if (clean.length <= maxWidth) return clean;
+  return `${clean.slice(0, Math.max(0, maxWidth - 1))}…`;
+}
+
+function sanitizeBuildLine(value: string): string {
+  return value
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .trim();
 }
 
 function createBuildLog(startedAt: number, rowCount = 3): RollingLog {
@@ -655,6 +723,7 @@ function createBuildLog(startedAt: number, rowCount = 3): RollingLog {
 
   const lines: string[] = [];
   let rendered = false;
+  let lastElapsed = "";
   let timer: Timer | null = null;
 
   function render(): void {
@@ -677,19 +746,29 @@ function createBuildLog(startedAt: number, rowCount = 3): RollingLog {
     rendered = true;
   }
 
+  function renderIfElapsedChanged(): void {
+    const elapsed = formatDuration(Date.now() - startedAt);
+    if (elapsed === lastElapsed) return;
+    lastElapsed = elapsed;
+    render();
+  }
+
+  lastElapsed = formatDuration(Date.now() - startedAt);
   render();
-  timer = setInterval(render, 100);
+  timer = setInterval(renderIfElapsedChanged, 100);
 
   return {
     addLine(line: string) {
-      const trimmed = line.trimEnd();
+      const trimmed = sanitizeBuildLine(line);
       if (!trimmed) return;
       lines.push(trimmed);
       render();
     },
     clear() {
       if (timer) clearInterval(timer);
+      timer = null;
       if (!rendered) return;
+      renderIfElapsedChanged();
       const totalRows = rowCount + 1;
       process.stdout.write(`\x1b[${totalRows}A`);
       for (let i = 0; i < totalRows; i += 1) {
@@ -729,6 +808,8 @@ async function streamBuildOutput(
   stream: ReadableStream<Uint8Array> | null,
   rollingLog: RollingLog,
   tail: string[],
+  logs: string[],
+  control: BuildOutputControl,
 ): Promise<void> {
   if (!stream) return;
 
@@ -741,11 +822,12 @@ async function streamBuildOutput(
     if (done) break;
 
     buffered += decoder.decode(value, { stream: true });
-    const parts = buffered.split(/\r?\n/);
+    const parts = buffered.split(/\r\n|\n|\r/);
     buffered = parts.pop() ?? "";
 
     for (const line of parts) {
-      rollingLog.addLine(line);
+      logs.push(line);
+      if (control.active) rollingLog.addLine(line);
       if (line.trim()) tail.push(line);
       if (tail.length > 40) tail.shift();
     }
@@ -753,10 +835,96 @@ async function streamBuildOutput(
 
   buffered += decoder.decode();
   if (buffered.trim()) {
-    rollingLog.addLine(buffered);
+    logs.push(buffered);
+    if (control.active) rollingLog.addLine(buffered);
     tail.push(buffered);
     if (tail.length > 40) tail.shift();
   }
+}
+
+function buildLogPath(startedAt: number): string {
+  const timestamp = new Date(startedAt)
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+  return join(BUILD_LOG_DIR, `build-${timestamp}.log`);
+}
+
+function writeBuildLog(args: string[], exitCode: number | null, startedAt: number, logs: string[]): string {
+  const path = buildLogPath(startedAt);
+  ensureDir(dirname(path));
+  const contents = [
+    `Command: ${args.join(" ")}`,
+    `Exit Code: ${exitCode ?? "stopped"}`,
+    `Started At: ${new Date(startedAt).toISOString()}`,
+    "",
+    ...logs.map(sanitizeBuildLine).filter(Boolean),
+    "",
+  ].join("\n");
+  writeFileSync(path, contents);
+  return path;
+}
+
+function extractBuildErrors(logs: string[]): string[] {
+  const cleaned = logs.map(sanitizeBuildLine).filter(Boolean);
+  const errors = cleaned.filter((line) =>
+    /\b(error|fatal error):|xcodebuild: error:|BUILD FAILED|The following build commands failed|Command .* failed/i.test(
+      line,
+    ),
+  );
+
+  if (errors.length > 0) {
+    return errors.slice(-8);
+  }
+
+  return cleaned.slice(-8);
+}
+
+function printBuildFailureDetails(exitCode: number | null, logs: string[], logPath: string): void {
+  if (exitCode !== null) printRunDetail("xcodebuild", `exited with code ${exitCode}`);
+
+  const errors = extractBuildErrors(logs);
+  if (errors.length > 0) {
+    console.log("");
+    printRunLine(styles.label("Build Error:"));
+    for (const line of errors) {
+      printRunLine(styles.error(line));
+    }
+  }
+
+  console.log("");
+  printRunLine(`Build logs: ${styles.label(logPath)}`);
+}
+
+function printDeviceDiagnostic(diagnostic: DeviceDiagnostic): void {
+  if (diagnostic.scanError) {
+    printRunDetail("device scan failed", diagnostic.scanError);
+    return;
+  }
+
+  if (diagnostic.issue) {
+    printRunLine(styles.error(diagnostic.issue));
+
+    const availableDevices = diagnostic.devices.filter((candidate) => deviceUnavailableReason(candidate) === null);
+    console.log("");
+    printRunLine(styles.label("Devices Available:"));
+    if (availableDevices.length > 0) {
+      for (const device of availableDevices) {
+        printRunLine(`${styles.label(device.id)}  ${formatDevice(device)}`);
+      }
+    } else {
+      printRunLine(styles.muted("none"));
+    }
+    return;
+  }
+
+  if (diagnostic.matchingDevice) {
+    printRunDetail("device", `${formatDeviceIdentity(diagnostic.matchingDevice)} is still available`);
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 async function resolveBuiltAppPath(target: XcodeTarget, scheme: string, device: Device, config: DinggyConfig): Promise<string> {
@@ -808,21 +976,77 @@ async function buildApp(target: XcodeTarget, scheme: string, device: Device, der
 
   const rollingLog = createBuildLog(startedAt);
   const tail: string[] = [];
+  const logs: string[] = [];
+  const outputControl: BuildOutputControl = { active: true };
+  let deviceScanDone = false;
+  const deviceScan = scanSelectedDevice(device).then((result) => {
+    deviceScanDone = true;
+    return result;
+  });
   const proc = Bun.spawn(args, {
     stdout: "pipe",
     stderr: "pipe",
   });
 
-  const [exitCode] = await Promise.all([
-    proc.exited,
-    streamBuildOutput(proc.stdout, rollingLog, tail),
-    streamBuildOutput(proc.stderr, rollingLog, tail),
+  const outputComplete = Promise.all([
+    streamBuildOutput(proc.stdout, rollingLog, tail, logs, outputControl),
+    streamBuildOutput(proc.stderr, rollingLog, tail, logs, outputControl),
   ]);
+  const buildExited = proc.exited.then((exitCode) => ({ kind: "build" as const, exitCode }));
+  const deviceScanCompleted = deviceScan.then((diagnostic) => ({ kind: "device" as const, diagnostic }));
+
+  let exitCode: number | null = null;
+  let diagnostic: DeviceDiagnostic | null = null;
+  const firstResult = await Promise.race([buildExited, deviceScanCompleted]);
+
+  if (firstResult.kind === "device") {
+    diagnostic = firstResult.diagnostic;
+    if (diagnostic.issue) {
+      outputControl.active = false;
+      proc.kill("SIGTERM");
+      const hardKill = setTimeout(() => proc.kill("SIGKILL"), 2000);
+      await Promise.race([Promise.all([proc.exited, outputComplete]), delay(5000)]);
+      clearTimeout(hardKill);
+
+      rollingLog.clear();
+      printRunLine(styles.error(kleur.bold(`✕ Build Stopped in ${formatDuration(Date.now() - startedAt)}`)));
+      printDeviceDiagnostic(diagnostic);
+      printRunLine(`Build logs: ${styles.label(writeBuildLog(args, null, startedAt, logs))}`);
+      throw new SilentExit(1);
+    }
+
+    exitCode = await proc.exited;
+  } else {
+    exitCode = firstResult.exitCode;
+    if (exitCode !== 0) {
+      await outputComplete;
+      rollingLog.clear();
+      printRunLine(styles.error(kleur.bold(`✕ Build Failed in ${formatDuration(Date.now() - startedAt)}`)));
+      const status = createLiveStatus();
+      if (!deviceScanDone) status.set("Checking Device Availability...");
+      diagnostic = await deviceScan;
+      status.clear();
+      if (diagnostic.issue || exitCode === 70) {
+        printDeviceDiagnostic(diagnostic);
+        printRunLine(`Build logs: ${styles.label(writeBuildLog(args, exitCode, startedAt, logs))}`);
+      } else {
+        printBuildFailureDetails(exitCode, logs, writeBuildLog(args, exitCode, startedAt, logs));
+      }
+      throw new SilentExit(1);
+    }
+  }
+
+  await outputComplete;
 
   rollingLog.clear();
   if (exitCode !== 0) {
     printRunLine(styles.error(kleur.bold(`✕ Build Failed in ${formatDuration(Date.now() - startedAt)}`)));
-    printRunDetail("xcodebuild", `exited with code ${exitCode}`);
+    if (diagnostic && (diagnostic.issue || exitCode === 70)) {
+      printDeviceDiagnostic(diagnostic);
+      printRunLine(`Build logs: ${styles.label(writeBuildLog(args, exitCode, startedAt, logs))}`);
+    } else {
+      printBuildFailureDetails(exitCode, logs, writeBuildLog(args, exitCode, startedAt, logs));
+    }
     throw new SilentExit(1);
   }
   printRunLine(styles.success(kleur.bold(`✓ Build Completed in ${formatDuration(Date.now() - startedAt)}`)));
@@ -924,7 +1148,7 @@ function printConfig(): void {
   console.log(JSON.stringify(readConfig(), null, 2));
 }
 
-type CleanTarget = "build-cache" | "config";
+type CleanTarget = "build-cache" | "build-logs" | "config";
 
 function cleanBuildCache(config: DinggyConfig): void {
   const derivedDataPath = resolvePath(config.derivedDataPath || DEFAULT_DERIVED_DATA);
@@ -932,6 +1156,13 @@ function cleanBuildCache(config: DinggyConfig): void {
   printRunLine(runStyles.muted("Removing Build Cache"));
   rmSync(derivedDataPath, { recursive: true, force: true });
   printRunLine(styles.success(kleur.bold(`✓ Removed ${formatBytes(size)} ${runStyles.muted(derivedDataPath)}`)));
+}
+
+function cleanBuildLogs(): void {
+  const size = directorySize(BUILD_LOG_DIR);
+  printRunLine(runStyles.muted("Removing Build Error Logs"));
+  rmSync(BUILD_LOG_DIR, { recursive: true, force: true });
+  printRunLine(styles.success(kleur.bold(`✓ Removed ${formatBytes(size)} ${runStyles.muted(BUILD_LOG_DIR)}`)));
 }
 
 function cleanConfig(): void {
@@ -944,10 +1175,11 @@ async function clean(options: CliOptions): Promise<void> {
   const config = readConfig();
   const derivedDataPath = resolvePath(config.derivedDataPath || DEFAULT_DERIVED_DATA);
   const buildCacheSize = directorySize(derivedDataPath);
-  let targets: CleanTarget[] = ["build-cache"];
+  const buildLogsSize = directorySize(BUILD_LOG_DIR);
+  let targets: CleanTarget[] = ["build-cache", "build-logs"];
 
   if (options.force) {
-    targets = ["build-cache"];
+    targets = ["build-cache", "build-logs"];
   } else {
     const selected = await p.multiselect<CleanTarget>({
       message: "Select what to clean",
@@ -958,12 +1190,17 @@ async function clean(options: CliOptions): Promise<void> {
           hint: `${formatBytes(buildCacheSize)} ${config.derivedDataPath || DEFAULT_DERIVED_DATA}`,
         },
         {
+          label: "Build error logs",
+          value: "build-logs",
+          hint: `${formatBytes(buildLogsSize)} ${BUILD_LOG_DIR}`,
+        },
+        {
           label: "Config",
           value: "config",
           hint: CONFIG_PATH,
         },
       ],
-      initialValues: ["build-cache"],
+      initialValues: ["build-cache", "build-logs"],
       required: false,
     });
     if (p.isCancel(selected)) {
@@ -979,6 +1216,7 @@ async function clean(options: CliOptions): Promise<void> {
   }
 
   if (targets.includes("build-cache")) cleanBuildCache(config);
+  if (targets.includes("build-logs")) cleanBuildLogs();
   if (targets.includes("config")) cleanConfig();
 }
 
@@ -1000,15 +1238,15 @@ async function main(): Promise<void> {
   }
 
   if (command === "config") {
-    const configCommand = process.argv.slice(2)[1];
-    if (configCommand === "edit") {
-      await configureProject();
-      return;
-    }
     if (hasConfigUpdates(options)) {
       updateConfig(options);
       return;
     }
+    await configureProject();
+    return;
+  }
+
+  if (command === "info") {
     printConfig();
     return;
   }

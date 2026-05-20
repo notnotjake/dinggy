@@ -23,11 +23,11 @@ bun link
 | --- | --- |
 | `dinggy run` | Build, install, and launch on the remembered device. Prompts for missing config. |
 | `dinggy devices` | List available devices. |
-| `dinggy config` | Print the project `.dinggy/config.json`. |
-| `dinggy config edit` | Run interactive config again and save new choices. |
+| `dinggy config` | Run interactive config and save new choices. |
 | `dinggy config --device <id>` | Update one or more config values non-interactively. |
-| `dinggy clean` | Interactively clean build cache and optionally config. |
-| `dinggy clean --force` | Remove DerivedData/build cache without prompting. |
+| `dinggy info` | Print the project `.dinggy/config.json`. |
+| `dinggy clean` | Interactively clean build cache, build error logs, and optionally config. |
+| `dinggy clean --force` | Remove DerivedData/build cache and build error logs without prompting. |
 | `dinggy help` | Show help. |
 
 ## Agent usage
