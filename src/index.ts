@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 import * as p from "@clack/prompts";
 import kleur from "kleur";
@@ -71,6 +71,34 @@ type DeviceDiagnostic = {
   scanError?: string;
 };
 
+type RunPhase = "build" | "resolve-app" | "install" | "bundle-id" | "launch";
+
+type PerfEntry = {
+  version: 1;
+  startedAt: string;
+  finishedAt: string;
+  scheme: string;
+  launchRequested: boolean;
+  didError: boolean;
+  failedPhase?: RunPhase;
+  timingsMs: {
+    build?: number;
+    install?: number;
+    launch?: number;
+    total: number;
+  };
+};
+
+type PerfPhaseTimings = Omit<PerfEntry["timingsMs"], "total">;
+
+type PerfSummary = {
+  path: string;
+  count: number;
+  errorCount: number;
+  errorRate: number;
+  avgTotalMs: number | null;
+};
+
 class SilentExit extends Error {
   constructor(readonly code: number) {
     super("Silent exit");
@@ -81,6 +109,7 @@ const CONFIG_DIR = ".dinggy";
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const DEFAULT_DERIVED_DATA = join(CONFIG_DIR, "DerivedData");
 const BUILD_LOG_DIR = join(CONFIG_DIR, "build-logs");
+const PERF_PATH = join(CONFIG_DIR, "perf.jsonl");
 
 const styles = {
   title: (text: string) => kleur.bold().cyan(text),
@@ -185,6 +214,10 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(precision)}${units[unitIndex]}`;
 }
 
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
 function directorySize(path: string): number {
   if (!existsSync(path)) return 0;
 
@@ -203,6 +236,43 @@ function directorySize(path: string): number {
   }
 
   return total;
+}
+
+function readPerfEntries(): PerfEntry[] {
+  if (!existsSync(PERF_PATH)) return [];
+
+  return readFileSync(PERF_PATH, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line): PerfEntry[] => {
+      try {
+        const parsed = JSON.parse(line) as Partial<PerfEntry>;
+        if (parsed.version !== 1 || typeof parsed.timingsMs?.total !== "number") return [];
+        return [parsed as PerfEntry];
+      } catch {
+        return [];
+      }
+    });
+}
+
+function writePerfEntry(entry: PerfEntry): void {
+  ensureDir(dirname(PERF_PATH));
+  appendFileSync(PERF_PATH, `${JSON.stringify(entry)}\n`);
+}
+
+function perfSummary(): PerfSummary {
+  const entries = readPerfEntries();
+  const errorCount = entries.filter((entry) => entry.didError).length;
+  const totalMs = entries.reduce((sum, entry) => sum + entry.timingsMs.total, 0);
+
+  return {
+    path: PERF_PATH,
+    count: entries.length,
+    errorCount,
+    errorRate: entries.length > 0 ? errorCount / entries.length : 0,
+    avgTotalMs: entries.length > 0 ? totalMs / entries.length : null,
+  };
 }
 
 function fileCount(path: string): number {
@@ -947,6 +1017,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
+async function measurePhase<T>(timings: PerfPhaseTimings, phase: keyof PerfPhaseTimings, task: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await task();
+  } finally {
+    timings[phase] = Date.now() - startedAt;
+  }
+}
+
 async function resolveBuiltAppPath(target: XcodeTarget, scheme: string, device: Device, config: DinggyConfig): Promise<string> {
   const guessedPath = appPath(config, scheme);
   if (existsSync(guessedPath)) return guessedPath;
@@ -1104,7 +1183,6 @@ async function launchApp(device: Device, bundleId: string, status = createLiveSt
 }
 
 async function run(options: CliOptions): Promise<void> {
-  const runStartedAt = Date.now();
   let config = readConfig();
   if (!hasRunConfig(config, options)) {
     config = await configureProject();
@@ -1128,23 +1206,61 @@ async function run(options: CliOptions): Promise<void> {
   writeConfig(nextConfig);
 
   ensureDir(dirname(derivedDataPath));
-  await buildApp(target, scheme, device, derivedDataPath);
+  const runStartedAt = Date.now();
+  const timings: PerfPhaseTimings = {};
+  let failedPhase: RunPhase | undefined;
+  let didError = false;
 
-  const builtApp = await resolveBuiltAppPath(target, scheme, device, nextConfig);
-  const status = createLiveStatus();
+  try {
+    failedPhase = "build";
+    await measurePhase(timings, "build", () => buildApp(target, scheme, device, derivedDataPath));
 
-  await installApp(device, builtApp, status);
-  const bundleId = await bundleIdentifier(builtApp);
+    failedPhase = "resolve-app";
+    const builtApp = await resolveBuiltAppPath(target, scheme, device, nextConfig);
+    const status = createLiveStatus();
 
-  if (options.launch) {
-    await launchApp(device, bundleId, status);
-    printRunLine(kleur.bold(`✓ App Launched in ${formatDuration(Date.now() - runStartedAt)} ${launchEmoji()}`));
-  } else {
-    printRunLine(styles.success(kleur.bold(`✓ App Installed in ${formatDuration(Date.now() - runStartedAt)}`)));
+    failedPhase = "install";
+    await measurePhase(timings, "install", () => installApp(device, builtApp, status));
+
+    failedPhase = "bundle-id";
+    const bundleId = await bundleIdentifier(builtApp);
+
+    if (options.launch) {
+      failedPhase = "launch";
+      await measurePhase(timings, "launch", () => launchApp(device, bundleId, status));
+      printRunLine(kleur.bold(`✓ App Launched in ${formatDuration(Date.now() - runStartedAt)} ${launchEmoji()}`));
+    } else {
+      printRunLine(styles.success(kleur.bold(`✓ App Installed in ${formatDuration(Date.now() - runStartedAt)}`)));
+    }
+
+    failedPhase = undefined;
+    printRunDetail("Bundle ID", bundleId);
+    printRunDetail("Target", device.name);
+  } catch (error) {
+    didError = true;
+    throw error;
+  } finally {
+    const finishedAt = Date.now();
+    try {
+      writePerfEntry({
+        version: 1,
+        startedAt: new Date(runStartedAt).toISOString(),
+        finishedAt: new Date(finishedAt).toISOString(),
+        scheme,
+        launchRequested: options.launch,
+        didError,
+        ...(didError && failedPhase ? { failedPhase } : {}),
+        timingsMs: {
+          ...timings,
+          total: finishedAt - runStartedAt,
+        },
+      });
+    } catch (error) {
+      if (!didError) {
+        logError(`Could not write performance log: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
-
-  printRunDetail("Bundle ID", bundleId);
-  printRunDetail("Target", device.name);
 }
 
 async function printDevices(options: CliOptions): Promise<void> {
@@ -1174,6 +1290,7 @@ function printInfo(options: CliOptions): void {
   const derivedDataSize = directorySize(resolvePath(derivedDataPath));
   const buildLogsSize = directorySize(BUILD_LOG_DIR);
   const buildLogsCount = fileCount(BUILD_LOG_DIR);
+  const performance = perfSummary();
 
   if (options.json) {
     console.log(
@@ -1193,6 +1310,18 @@ function printInfo(options: CliOptions): void {
               formatted: formatBytes(buildLogsSize),
               count: buildLogsCount,
             },
+            performance: {
+              path: performance.path,
+              count: performance.count,
+            },
+          },
+          performance: {
+            buildCount: performance.count,
+            errorCount: performance.errorCount,
+            errorRate: performance.errorRate,
+            avgTotalMs: performance.avgTotalMs,
+            formattedAvgTotal: performance.avgTotalMs === null ? null : formatDuration(performance.avgTotalMs),
+            formattedErrorRate: formatPercent(performance.errorRate),
           },
         },
         null,
@@ -1219,6 +1348,12 @@ function printInfo(options: CliOptions): void {
   printInfoDetail(
     "Build logs",
     `${BUILD_LOG_DIR} ${styles.muted(`${buildLogsCount} ${buildLogsCount === 1 ? "file" : "files"}, ${formatBytes(buildLogsSize)}`)}`,
+  );
+  printInfoDetail(
+    "Performance",
+    performance.count === 0
+      ? styles.muted(`no builds recorded (${PERF_PATH})`)
+      : `${performance.count} ${performance.count === 1 ? "build" : "builds"}, avg ${formatDuration(performance.avgTotalMs ?? 0)}, errors ${formatPercent(performance.errorRate)} ${styles.muted(PERF_PATH)}`,
   );
 }
 

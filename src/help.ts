@@ -36,7 +36,7 @@ export function printMainHelp(): void {
   printRow("run [options]", commandSyntax(["run"], "[options]"), "Build, install, and launch on configured device");
   printRow("config [options]", commandSyntax(["config"], "[options]"), "Update project config");
   printRow("clean [--force]", commandSyntax(["clean"], "[--force]"), "Clean build cache and logs");
-  printRow("info [--json]", commandSyntax(["info"], "[--json]"), "Print project config");
+  printRow("info [--json]", commandSyntax(["info"], "[--json]"), "Print project config and performance");
   printRow("devices [--json]", commandSyntax(["devices"], "[--json]"), "List available devices");
   console.log("");
   console.log(`${styles.label("Options")}:`);

@@ -25,7 +25,7 @@ bun link
 | `dinggy devices` | List available devices. |
 | `dinggy config` | Run interactive config and save new choices. |
 | `dinggy config --device <id>` | Update one or more config values non-interactively. |
-| `dinggy info` | Print the project `.dinggy/config.json`. |
+| `dinggy info` | Print the project `.dinggy/config.json`, storage, and performance summary. |
 | `dinggy clean` | Interactively clean build cache, build error logs, and optionally config. |
 | `dinggy clean --force` | Remove DerivedData/build cache and build error logs without prompting. |
 | `dinggy help` | Show help. |
@@ -42,3 +42,5 @@ dinggy clean --force
 ```
 
 By default build artifacts go to `.dinggy/DerivedData`.
+
+Build performance is recorded in `.dinggy/perf.jsonl`. `dinggy info` summarizes the recorded run count, average total time, and error rate.
