@@ -1,0 +1,50 @@
+src/index.ts
+  s_eaca570f81488b::t_7fa910ba914184 402,411
+  s_eaca570f81488b::t_5e6cba09c91039 63-66
+  s_eaca570f81488b::t_9626ee3596f269 811,829,838,845-849,851-896
+  s_eaca570f81488b::t_3aea457a8bfd87 812,830,839
+  s_eaca570f81488b::t_73b398bc462a24 344,369-377,385-394
+  s_eaca570f81488b::t_39dbcaac9dd1f3 899-903,905-908,911,915,918-919,921-922,924-927,991,995-1004,1006-1013,1015-1020,1037-1039,1045
+  s_eaca570f81488b::t_69d699df1ee6ea 704,713,726,749-756,771
+  s_eaca570f81488b::t_33113eb5a90a4a 83,850,1151,1161-1167,1178-1179,1182,1192-1196,1203,1219
+  s_eaca570f81488b::t_cf4add6073c83c 1021-1024,1027,1029-1030,1034-1036,1044
+  s_eaca570f81488b::t_f3be5bbea279e6 979,992-993,1014,1031,1033,1046-1048
+  s_eaca570f81488b::t_fbba3dc8382fe1 1005
+  s_eaca570f81488b::t_302a24b57ec818 67-73,395-401,403-410,412-426
+  s_eaca570f81488b::t_d7198c3ac61a94 1032
+  s_eaca570f81488b::t_31edbb437fe67b 913,916
+  s_eaca570f81488b::t_3c92dae29f8f55 524,532,558,1245-1249
+  s_eaca570f81488b::t_81819cd1fdff4f 758,769
+  s_eaca570f81488b::t_7686e1def1b5bb 980
+  s_eaca570f81488b::t_b32f1b1631ed23 825
+  s_eaca570f81488b::t_9afcc6b442bb19 981-985,1025-1026,1028
+  s_eaca570f81488b::t_5e86d9d241190e 909-910,912,914
+  s_eaca570f81488b::t_e8cf1c6b4f2888 703,705-712,762
+  s_eaca570f81488b::t_0552e5428f3f04 904,917,920,923,928-929,1049
+skills/dinggy/SKILL.md
+  s_eaca570f81488b::t_9d9764d8b7d162 24,26
+README.md
+  s_eaca570f81488b::t_5693b7675f8dc6 29-30
+  s_eaca570f81488b::t_65df24ca5990db 26,28
+src/help.ts
+  s_eaca570f81488b::t_5cc28007bd6129 29
+  s_eaca570f81488b::t_69686e54598e58 35,52
+  s_eaca570f81488b::t_371a44f747b6db 34,40-41
+  s_eaca570f81488b::t_ca9d18b2c74e25 38,42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "c15c49a15ae9c57dec1ace465de66634f5c17831",
+  "prompts": {},
+  "sessions": {
+    "s_eaca570f81488b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e428b-d99f-78f1-b06e-5add7050b66b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jake Go <jake@notnotjake.com>"
+    }
+  }
+}
