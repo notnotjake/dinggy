@@ -1,0 +1,26 @@
+src/index.ts
+  s_eaca570f81488b::t_8ea3d733ebc71b 1172,1205-1213
+  s_eaca570f81488b::t_b8746f43b59ae1 1171,1173-1204,1324
+  s_eaca570f81488b::t_275439588a9763 1167-1170,1214-1222
+  s_eaca570f81488b::t_3665963d759625 174,185,208-222
+src/help.ts
+  s_eaca570f81488b::t_3ecb2347ecede7 36-38
+  s_eaca570f81488b::t_6e3aa5c2cbb64e 39-40
+  s_eaca570f81488b::t_09355eac646dfe 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "e71ac1d10696660d9c9e1f2c45e3a762d7ac78ac",
+  "prompts": {},
+  "sessions": {
+    "s_eaca570f81488b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e428b-d99f-78f1-b06e-5add7050b66b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jake Go <jake@notnotjake.com>"
+    }
+  }
+}
