@@ -1,0 +1,31 @@
+src/index.ts
+  s_fc4b52de401f56::t_82c3c124c264d2 1319,1355-1356
+  s_fc4b52de401f56::t_67b46e85561180 241-277
+  s_fc4b52de401f56::t_63a7b5f39c1233 1020-1028
+  s_fc4b52de401f56::t_b457fce551feca 1244-1262
+  s_fc4b52de401f56::t_d89f2ea5b41cd9 91-92
+  s_fc4b52de401f56::t_cb5edd59216fc1 1209-1212,1214-1216,1218-1220,1222-1226,1228-1243,1263
+  s_fc4b52de401f56::t_031ae7f41a5c9b 217-220
+  s_fc4b52de401f56::t_4e5f0fe7a143df 2,74-90,93-101,112
+  s_fc4b52de401f56::t_7fb4d7f57b94ad 1293,1313-1318,1320-1324,1352-1354
+README.md
+  s_fc4b52de401f56::t_ee7a5be9f51b22 28,45-46
+src/help.ts
+  s_fc4b52de401f56::t_3112d0f2a66531 39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "46196447ef4ceeb245d8b7dcd1087e58ddd4c962",
+  "prompts": {},
+  "sessions": {
+    "s_fc4b52de401f56": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e46ec-e1d4-7102-912c-231b7b55d403",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jake Go <jake@notnotjake.com>"
+    }
+  }
+}
