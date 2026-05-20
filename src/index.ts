@@ -171,7 +171,7 @@ function formatDuration(ms: number): string {
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024) return `${bytes}B`;
   const units = ["KB", "MB", "GB", "TB"];
   let value = bytes / 1024;
   let unitIndex = 0;
@@ -182,7 +182,7 @@ function formatBytes(bytes: number): string {
   }
 
   const precision = value >= 10 ? 1 : 2;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+  return `${value.toFixed(precision)}${units[unitIndex]}`;
 }
 
 function directorySize(path: string): number {
@@ -200,6 +200,26 @@ function directorySize(path: string): number {
       continue;
     }
     total += statSync(entryPath).size;
+  }
+
+  return total;
+}
+
+function fileCount(path: string): number {
+  if (!existsSync(path)) return 0;
+
+  const stats = statSync(path);
+  if (!stats.isDirectory()) return stats.isFile() ? 1 : 0;
+
+  let total = 0;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const entryPath = join(path, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      total += fileCount(entryPath);
+      continue;
+    }
+    total += 1;
   }
 
   return total;
@@ -1144,8 +1164,62 @@ async function printDevices(options: CliOptions): Promise<void> {
   }
 }
 
-function printConfig(): void {
-  console.log(JSON.stringify(readConfig(), null, 2));
+function printInfoDetail(label: string, value: string): void {
+  console.log(`  ${styles.label(`${label}:`)} ${value}`);
+}
+
+function printInfo(options: CliOptions): void {
+  const config = readConfig();
+  const derivedDataPath = config.derivedDataPath || DEFAULT_DERIVED_DATA;
+  const derivedDataSize = directorySize(resolvePath(derivedDataPath));
+  const buildLogsSize = directorySize(BUILD_LOG_DIR);
+  const buildLogsCount = fileCount(BUILD_LOG_DIR);
+
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          configPath: CONFIG_PATH,
+          config,
+          storage: {
+            derivedData: {
+              path: derivedDataPath,
+              bytes: derivedDataSize,
+              formatted: formatBytes(derivedDataSize),
+            },
+            buildLogs: {
+              path: BUILD_LOG_DIR,
+              bytes: buildLogsSize,
+              formatted: formatBytes(buildLogsSize),
+              count: buildLogsCount,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  const target = config.workspace
+    ? `${config.workspace} ${styles.muted("(workspace)")}`
+    : config.project
+      ? `${config.project} ${styles.muted("(project)")}`
+      : styles.muted("not configured");
+  const device = config.device
+    ? `${config.device.name ?? config.device.id} ${styles.muted(`(${config.device.id})`)}`
+    : styles.muted("not configured");
+
+  console.log(`${styles.title("Project Config")} ${styles.muted(CONFIG_PATH)}`);
+  printInfoDetail("Target", target);
+  printInfoDetail("Scheme", config.scheme ?? styles.muted("not configured"));
+  printInfoDetail("Device", device);
+  printInfoDetail("DerivedData", `${derivedDataPath} ${styles.muted(formatBytes(derivedDataSize))}`);
+  printInfoDetail(
+    "Build logs",
+    `${BUILD_LOG_DIR} ${styles.muted(`${buildLogsCount} ${buildLogsCount === 1 ? "file" : "files"}, ${formatBytes(buildLogsSize)}`)}`,
+  );
 }
 
 type CleanTarget = "build-cache" | "build-logs" | "config";
@@ -1247,7 +1321,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "info") {
-    printConfig();
+    printInfo(options);
     return;
   }
 
