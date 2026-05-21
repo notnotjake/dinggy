@@ -99,6 +99,11 @@ type PerfSummary = {
   avgTotalMs: number | null;
 };
 
+type PathStats = {
+  bytes: number;
+  files: number;
+};
+
 class SilentExit extends Error {
   constructor(readonly code: number) {
     super("Silent exit");
@@ -218,24 +223,33 @@ function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-function directorySize(path: string): number {
-  if (!existsSync(path)) return 0;
+function pathStats(path: string): PathStats {
+  if (!existsSync(path)) return { bytes: 0, files: 0 };
 
   const stats = statSync(path);
-  if (!stats.isDirectory()) return stats.size;
+  if (!stats.isDirectory()) {
+    return { bytes: stats.size, files: stats.isFile() ? 1 : 0 };
+  }
 
-  let total = 0;
+  const total: PathStats = { bytes: 0, files: 0 };
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     const entryPath = join(path, entry.name);
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      total += directorySize(entryPath);
+      const childStats = pathStats(entryPath);
+      total.bytes += childStats.bytes;
+      total.files += childStats.files;
       continue;
     }
-    total += statSync(entryPath).size;
+    total.bytes += statSync(entryPath).size;
+    total.files += 1;
   }
 
   return total;
+}
+
+function directorySize(path: string): number {
+  return pathStats(path).bytes;
 }
 
 function readPerfEntries(): PerfEntry[] {
@@ -273,26 +287,6 @@ function perfSummary(): PerfSummary {
     errorRate: entries.length > 0 ? errorCount / entries.length : 0,
     avgTotalMs: entries.length > 0 ? totalMs / entries.length : null,
   };
-}
-
-function fileCount(path: string): number {
-  if (!existsSync(path)) return 0;
-
-  const stats = statSync(path);
-  if (!stats.isDirectory()) return stats.isFile() ? 1 : 0;
-
-  let total = 0;
-  for (const entry of readdirSync(path, { withFileTypes: true })) {
-    const entryPath = join(path, entry.name);
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) {
-      total += fileCount(entryPath);
-      continue;
-    }
-    total += 1;
-  }
-
-  return total;
 }
 
 function printRunLine(message: string): void {
@@ -493,8 +487,7 @@ function diagnoseDevice(device: Device, devices: Device[]): DeviceDiagnostic {
     };
   }
 
-  const reason = deviceUnavailableReason(matchingDevice);
-  if (reason) {
+  if (deviceUnavailableReason(matchingDevice)) {
     return {
       devices,
       matchingDevice,
@@ -650,7 +643,7 @@ function resolveDevice(config: DinggyConfig, options: CliOptions): Device {
 
   return {
     id: configuredId,
-    name: options.device === configuredId ? config.device?.name ?? configuredId : config.device?.name ?? configuredId,
+    name: config.device?.name ?? configuredId,
     platform: config.device?.platform,
     available: true,
     simulator: false,
@@ -897,7 +890,6 @@ function createLiveStatus(): { set: (message: string) => void; clear: () => void
 async function streamBuildOutput(
   stream: ReadableStream<Uint8Array> | null,
   rollingLog: RollingLog,
-  tail: string[],
   logs: string[],
   control: BuildOutputControl,
 ): Promise<void> {
@@ -918,8 +910,6 @@ async function streamBuildOutput(
     for (const line of parts) {
       logs.push(line);
       if (control.active) rollingLog.addLine(line);
-      if (line.trim()) tail.push(line);
-      if (tail.length > 40) tail.shift();
     }
   }
 
@@ -927,8 +917,6 @@ async function streamBuildOutput(
   if (buffered.trim()) {
     logs.push(buffered);
     if (control.active) rollingLog.addLine(buffered);
-    tail.push(buffered);
-    if (tail.length > 40) tail.shift();
   }
 }
 
@@ -1074,7 +1062,6 @@ async function buildApp(target: XcodeTarget, scheme: string, device: Device, der
   logInfo(`Building ${styles.label(scheme)} for ${styles.label(device.name)}...`);
 
   const rollingLog = createBuildLog(startedAt);
-  const tail: string[] = [];
   const logs: string[] = [];
   const outputControl: BuildOutputControl = { active: true };
   let deviceScanDone = false;
@@ -1088,8 +1075,8 @@ async function buildApp(target: XcodeTarget, scheme: string, device: Device, der
   });
 
   const outputComplete = Promise.all([
-    streamBuildOutput(proc.stdout, rollingLog, tail, logs, outputControl),
-    streamBuildOutput(proc.stderr, rollingLog, tail, logs, outputControl),
+    streamBuildOutput(proc.stdout, rollingLog, logs, outputControl),
+    streamBuildOutput(proc.stderr, rollingLog, logs, outputControl),
   ]);
   const buildExited = proc.exited.then((exitCode) => ({ kind: "build" as const, exitCode }));
   const deviceScanCompleted = deviceScan.then((diagnostic) => ({ kind: "device" as const, diagnostic }));
@@ -1287,9 +1274,8 @@ function printInfoDetail(label: string, value: string): void {
 function printInfo(options: CliOptions): void {
   const config = readConfig();
   const derivedDataPath = config.derivedDataPath || DEFAULT_DERIVED_DATA;
-  const derivedDataSize = directorySize(resolvePath(derivedDataPath));
-  const buildLogsSize = directorySize(BUILD_LOG_DIR);
-  const buildLogsCount = fileCount(BUILD_LOG_DIR);
+  const derivedDataStats = pathStats(resolvePath(derivedDataPath));
+  const buildLogsStats = pathStats(BUILD_LOG_DIR);
   const performance = perfSummary();
 
   if (options.json) {
@@ -1301,14 +1287,14 @@ function printInfo(options: CliOptions): void {
           storage: {
             derivedData: {
               path: derivedDataPath,
-              bytes: derivedDataSize,
-              formatted: formatBytes(derivedDataSize),
+              bytes: derivedDataStats.bytes,
+              formatted: formatBytes(derivedDataStats.bytes),
             },
             buildLogs: {
               path: BUILD_LOG_DIR,
-              bytes: buildLogsSize,
-              formatted: formatBytes(buildLogsSize),
-              count: buildLogsCount,
+              bytes: buildLogsStats.bytes,
+              formatted: formatBytes(buildLogsStats.bytes),
+              count: buildLogsStats.files,
             },
             performance: {
               path: performance.path,
@@ -1341,20 +1327,18 @@ function printInfo(options: CliOptions): void {
     : styles.muted("not configured");
 
   console.log(`${styles.title("Project Config")} ${styles.muted(CONFIG_PATH)}`);
+  printInfoDetail("Device", device);
   printInfoDetail("Target", target);
   printInfoDetail("Scheme", config.scheme ?? styles.muted("not configured"));
-  printInfoDetail("Device", device);
-  printInfoDetail("DerivedData", `${derivedDataPath} ${styles.muted(formatBytes(derivedDataSize))}`);
+  printInfoDetail("DerivedData", `${derivedDataPath} ${styles.muted(formatBytes(derivedDataStats.bytes))}`);
   printInfoDetail(
     "Build logs",
-    `${BUILD_LOG_DIR} ${styles.muted(`${buildLogsCount} ${buildLogsCount === 1 ? "file" : "files"}, ${formatBytes(buildLogsSize)}`)}`,
+    `${BUILD_LOG_DIR} ${styles.muted(`${buildLogsStats.files} ${buildLogsStats.files === 1 ? "file" : "files"}, ${formatBytes(buildLogsStats.bytes)}`)}`,
   );
-  printInfoDetail(
-    "Performance",
-    performance.count === 0
-      ? styles.muted(`no builds recorded (${PERF_PATH})`)
-      : `${performance.count} ${performance.count === 1 ? "build" : "builds"}, avg ${formatDuration(performance.avgTotalMs ?? 0)}, errors ${formatPercent(performance.errorRate)} ${styles.muted(PERF_PATH)}`,
-  );
+  console.log(`${styles.title("Performance")} ${styles.muted(PERF_PATH)}`);
+  printInfoDetail("Builds", performance.count === 0 ? styles.muted("none recorded") : String(performance.count));
+  printInfoDetail("Average", performance.avgTotalMs === null ? styles.muted("not available") : formatDuration(performance.avgTotalMs));
+  printInfoDetail("Error rate", formatPercent(performance.errorRate));
 }
 
 type CleanTarget = "build-cache" | "build-logs" | "config";
