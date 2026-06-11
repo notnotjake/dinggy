@@ -7,6 +7,7 @@ import { isHelpFlag, printMainHelp } from "./help";
 
 type CliOptions = {
   device?: string;
+  platform?: AppPlatform;
   scheme?: string;
   workspace?: string;
   project?: string;
@@ -23,6 +24,7 @@ type ParsedArgs = {
 };
 
 type DinggyConfig = {
+  platform?: AppPlatform;
   device?: {
     id: string;
     name?: string;
@@ -43,6 +45,8 @@ type Device = {
   available: boolean;
   simulator: boolean;
 };
+
+type AppPlatform = "ios" | "macos";
 
 type XcodeTarget = {
   kind: "workspace" | "project";
@@ -70,6 +74,15 @@ type DeviceDiagnostic = {
   issue?: string;
   scanError?: string;
 };
+
+type BuildDestination =
+  | {
+      platform: "ios";
+      device: Device;
+    }
+  | {
+      platform: "macos";
+    };
 
 type RunPhase = "build" | "resolve-app" | "install" | "bundle-id" | "launch";
 
@@ -129,6 +142,11 @@ const runStyles = {
   muted: (text: string) => kleur.dim(text),
 };
 
+function parsePlatform(value: string | undefined): AppPlatform {
+  if (value === "ios" || value === "macos") return value;
+  throw new Error(`Invalid platform: ${value ?? ""}. Expected ios or macos.`);
+}
+
 function parseArgs(argv: string[]): ParsedArgs {
   const options: CliOptions = {
     force: false,
@@ -146,6 +164,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
     if (arg === "--device") {
       options.device = argv[++i];
+      continue;
+    }
+    if (arg === "--platform") {
+      options.platform = parsePlatform(argv[++i]);
       continue;
     }
     if (arg === "--scheme") {
@@ -331,15 +353,21 @@ function writeConfig(config: DinggyConfig): void {
   writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+function resolvePlatform(config: DinggyConfig, options: CliOptions): AppPlatform {
+  return options.platform ?? config.platform ?? "ios";
+}
+
 function hasConfigUpdates(options: CliOptions): boolean {
-  return Boolean(options.device || options.scheme || options.workspace || options.project || options.derivedData);
+  return Boolean(options.platform || options.device || options.scheme || options.workspace || options.project || options.derivedData);
 }
 
 function hasRunConfig(config: DinggyConfig, options: CliOptions): boolean {
+  const platform = resolvePlatform(config, options);
+  const hasProjectConfig = Boolean((options.workspace || options.project || config.workspace || config.project) && (options.scheme || config.scheme));
+  if (platform === "macos") return hasProjectConfig;
+
   return Boolean(
-    (options.workspace || options.project || config.workspace || config.project) &&
-      (options.scheme || config.scheme) &&
-      (options.device || config.device?.id),
+    hasProjectConfig && (options.device || config.device?.id),
   );
 }
 
@@ -349,6 +377,10 @@ function updateConfig(options: CliOptions): void {
     ...config,
     derivedDataPath: options.derivedData ?? config.derivedDataPath ?? DEFAULT_DERIVED_DATA,
   };
+
+  if (options.platform) {
+    nextConfig.platform = options.platform;
+  }
 
   if (options.device) {
     nextConfig.device = { id: options.device };
@@ -635,6 +667,24 @@ async function selectScheme(target: XcodeTarget): Promise<string> {
   return String(selected);
 }
 
+async function selectPlatform(config: DinggyConfig, options: CliOptions): Promise<AppPlatform> {
+  const configured = options.platform ?? config.platform;
+  if (configured) return configured;
+
+  const selected = await p.select({
+    message: "Select App Platform",
+    options: [
+      { label: "iOS Device", value: "ios", hint: "connected iPhone or iPad" },
+      { label: "macOS", value: "macos", hint: "this Mac" },
+    ],
+  });
+  if (p.isCancel(selected)) {
+    p.cancel("Cancelled.");
+    process.exit(1);
+  }
+  return parsePlatform(String(selected));
+}
+
 function resolveDevice(config: DinggyConfig, options: CliOptions): Device {
   const configuredId = options.device ?? config.device?.id;
   if (!configuredId) {
@@ -648,6 +698,12 @@ function resolveDevice(config: DinggyConfig, options: CliOptions): Device {
     available: true,
     simulator: false,
   };
+}
+
+function resolveBuildDestination(config: DinggyConfig, options: CliOptions): BuildDestination {
+  const platform = resolvePlatform(config, options);
+  if (platform === "macos") return { platform };
+  return { platform, device: resolveDevice(config, options) };
 }
 
 async function selectDevice(devices: Device[]): Promise<Device> {
@@ -721,12 +777,12 @@ async function reviewProjectSettings(target: XcodeTarget, config: DinggyConfig):
   return { target: nextTarget, derivedDataPath: nextDerivedDataPath };
 }
 
-async function configureProject(): Promise<DinggyConfig> {
+async function configureProject(options: CliOptions = {
+  force: false,
+  launch: true,
+  json: false,
+}): Promise<DinggyConfig> {
   const config = readConfig();
-  const deviceScan = listDevices().then(
-    (devices) => ({ devices, error: null }),
-    (error: unknown) => ({ devices: null, error }),
-  );
   const detectedTarget = detectXcodeTarget(config);
   if (!detectedTarget) {
     throw new Error("No .xcworkspace or .xcodeproj found in the current directory.");
@@ -741,23 +797,30 @@ async function configureProject(): Promise<DinggyConfig> {
     scheme = await selectScheme(target);
   }
 
-  const deviceResult = await deviceScan;
-  if (deviceResult.error) throw deviceResult.error;
-  const device = await selectDevice(deviceResult.devices ?? []);
+  const platform = await selectPlatform(config, options);
   const derivedDataPath = projectSettings.derivedDataPath;
 
   const nextConfig: DinggyConfig = {
-    device: {
-      id: device.id,
-      name: device.name,
-      platform: device.platform,
-    },
+    ...(config.device ? { device: config.device } : {}),
+    platform,
     scheme,
     derivedDataPath,
     [target.kind]: target.path,
   };
+
+  if (platform === "ios") {
+    const devices = await listDevices();
+    const device = await selectDevice(devices);
+    nextConfig.device = {
+      id: device.id,
+      name: device.name,
+      platform: device.platform,
+    };
+  }
+
   writeConfig(nextConfig);
   logInfo(`is ready! ${styles.muted(`saved ${CONFIG_PATH}`)}`);
+  console.log(`  ${styles.muted("Add ")}${styles.label(".dinggy/")}${styles.muted(" to your ")}${styles.label(".gitignore")}`);
   return nextConfig;
 }
 
@@ -766,8 +829,23 @@ function appBundleNameFromScheme(scheme: string): string {
   return `${cleaned}.app`;
 }
 
-function appPath(config: DinggyConfig, scheme: string): string {
-  return join(resolvePath(config.derivedDataPath), "Build", "Products", "Debug-iphoneos", appBundleNameFromScheme(scheme));
+function buildProductsSubdir(platform: AppPlatform): string {
+  return platform === "macos" ? "Debug" : "Debug-iphoneos";
+}
+
+function appPath(config: DinggyConfig, scheme: string, platform: AppPlatform): string {
+  return join(resolvePath(config.derivedDataPath), "Build", "Products", buildProductsSubdir(platform), appBundleNameFromScheme(scheme));
+}
+
+function buildDestinationArgs(destination: BuildDestination): string[] {
+  if (destination.platform === "macos") {
+    return ["-destination", "platform=macOS"];
+  }
+  return ["-destination", `id=${destination.device.id}`];
+}
+
+function buildDestinationName(destination: BuildDestination): string {
+  return destination.platform === "macos" ? "this Mac" : destination.device.name;
 }
 
 function parseBuildSetting(output: string, key: string): string | null {
@@ -1014,8 +1092,8 @@ async function measurePhase<T>(timings: PerfPhaseTimings, phase: keyof PerfPhase
   }
 }
 
-async function resolveBuiltAppPath(target: XcodeTarget, scheme: string, device: Device, config: DinggyConfig): Promise<string> {
-  const guessedPath = appPath(config, scheme);
+async function resolveBuiltAppPath(target: XcodeTarget, scheme: string, destination: BuildDestination, config: DinggyConfig): Promise<string> {
+  const guessedPath = appPath(config, scheme, destination.platform);
   if (existsSync(guessedPath)) return guessedPath;
 
   const args = [
@@ -1024,8 +1102,7 @@ async function resolveBuiltAppPath(target: XcodeTarget, scheme: string, device: 
     target.path,
     "-scheme",
     scheme,
-    "-destination",
-    `id=${device.id}`,
+    ...buildDestinationArgs(destination),
     "-derivedDataPath",
     config.derivedDataPath,
     "-showBuildSettings",
@@ -1043,15 +1120,14 @@ async function resolveBuiltAppPath(target: XcodeTarget, scheme: string, device: 
   throw new Error(`Built app not found. Checked ${guessedPath} and xcodebuild build settings.`);
 }
 
-async function buildApp(target: XcodeTarget, scheme: string, device: Device, derivedDataPath: string): Promise<void> {
+async function buildApp(target: XcodeTarget, scheme: string, destination: BuildDestination, derivedDataPath: string): Promise<void> {
   const args = [
     "xcodebuild",
     target.kind === "workspace" ? "-workspace" : "-project",
     target.path,
     "-scheme",
     scheme,
-    "-destination",
-    `id=${device.id}`,
+    ...buildDestinationArgs(destination),
     "-derivedDataPath",
     derivedDataPath,
     "build",
@@ -1059,16 +1135,19 @@ async function buildApp(target: XcodeTarget, scheme: string, device: Device, der
 
   const startedAt = Date.now();
   console.log("");
-  logInfo(`Building ${styles.label(scheme)} for ${styles.label(device.name)}...`);
+  logInfo(`Building ${styles.label(scheme)} for ${styles.label(buildDestinationName(destination))}...`);
 
   const rollingLog = createBuildLog(startedAt);
   const logs: string[] = [];
   const outputControl: BuildOutputControl = { active: true };
-  let deviceScanDone = false;
-  const deviceScan = scanSelectedDevice(device).then((result) => {
-    deviceScanDone = true;
-    return result;
-  });
+  let deviceScanDone = destination.platform === "macos";
+  const deviceScan =
+    destination.platform === "ios"
+      ? scanSelectedDevice(destination.device).then((result) => {
+          deviceScanDone = true;
+          return result;
+        })
+      : null;
   const proc = Bun.spawn(args, {
     stdout: "pipe",
     stderr: "pipe",
@@ -1079,11 +1158,11 @@ async function buildApp(target: XcodeTarget, scheme: string, device: Device, der
     streamBuildOutput(proc.stderr, rollingLog, logs, outputControl),
   ]);
   const buildExited = proc.exited.then((exitCode) => ({ kind: "build" as const, exitCode }));
-  const deviceScanCompleted = deviceScan.then((diagnostic) => ({ kind: "device" as const, diagnostic }));
+  const deviceScanCompleted = deviceScan?.then((diagnostic) => ({ kind: "device" as const, diagnostic }));
 
   let exitCode: number | null = null;
   let diagnostic: DeviceDiagnostic | null = null;
-  const firstResult = await Promise.race([buildExited, deviceScanCompleted]);
+  const firstResult = await Promise.race(deviceScanCompleted ? [buildExited, deviceScanCompleted] : [buildExited]);
 
   if (firstResult.kind === "device") {
     diagnostic = firstResult.diagnostic;
@@ -1110,9 +1189,9 @@ async function buildApp(target: XcodeTarget, scheme: string, device: Device, der
       printRunLine(styles.error(kleur.bold(`✕ Build Failed in ${formatDuration(Date.now() - startedAt)}`)));
       const status = createLiveStatus();
       if (!deviceScanDone) status.set("Checking Device Availability...");
-      diagnostic = await deviceScan;
+      diagnostic = deviceScan ? await deviceScan : null;
       status.clear();
-      if (diagnostic.issue || exitCode === 70) {
+      if (diagnostic && (diagnostic.issue || exitCode === 70)) {
         printDeviceDiagnostic(diagnostic);
         printRunLine(`Build logs: ${styles.label(writeBuildLog(args, exitCode, startedAt, logs))}`);
       } else {
@@ -1158,6 +1237,46 @@ async function bundleIdentifier(app: string): Promise<string> {
   return result.stdout.trim();
 }
 
+async function optionalBundleIdentifier(app: string): Promise<string | null> {
+  const plist = join(app, "Info.plist");
+  const result = await runCommand(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", plist]);
+  if (result.exitCode !== 0) return null;
+
+  const value = result.stdout.trim();
+  return value || null;
+}
+
+function requireBundleIdentifier(value: string | null): string {
+  if (!value) throw new Error("Could not read CFBundleIdentifier.");
+  return value;
+}
+
+async function optionalBundleExecutable(app: string): Promise<string | null> {
+  const plist = join(app, "Info.plist");
+  const result = await runCommand(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleExecutable", plist]);
+  if (result.exitCode !== 0) return null;
+
+  const value = result.stdout.trim();
+  return value || null;
+}
+
+async function macAppExecutablePath(app: string): Promise<string> {
+  const plistExecutable = await optionalBundleExecutable(app);
+  if (plistExecutable) return join(app, "Contents", "MacOS", plistExecutable);
+
+  const executablesDir = join(app, "Contents", "MacOS");
+  const executableFiles = readdirSync(executablesDir)
+    .map((entry) => join(executablesDir, entry))
+    .filter((entryPath) => statSync(entryPath).isFile());
+  if (executableFiles.length === 1) return executableFiles[0] ?? "";
+
+  const appName = basename(app, extname(app));
+  const matchingExecutable = executableFiles.find((entryPath) => basename(entryPath) === appName);
+  if (matchingExecutable) return matchingExecutable;
+
+  throw new Error(`Could not identify app executable in ${executablesDir}.`);
+}
+
 async function launchApp(device: Device, bundleId: string, status = createLiveStatus()): Promise<void> {
   status.set(`Launching on ${device.name}`);
   const result = await runCommand(["xcrun", "devicectl", "device", "process", "launch", "--device", device.id, bundleId], {
@@ -1169,27 +1288,111 @@ async function launchApp(device: Device, bundleId: string, status = createLiveSt
   }
 }
 
+async function macAppProcessIds(app: string): Promise<number[]> {
+  const executablePath = await macAppExecutablePath(app);
+  const result = await runCommand(["/bin/ps", "-axo", "pid=,command="], { timeoutMs: 10000 });
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout).trim() || "ps failed.");
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .flatMap((line): number[] => {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/);
+      if (!match?.[1] || !match[2]) return [];
+      const command = match[2].trim();
+      if (command !== executablePath && !command.startsWith(`${executablePath} `)) return [];
+      return [Number(match[1])];
+    })
+    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+}
+
+async function processIsRunning(pid: number): Promise<boolean> {
+  const result = await runCommand(["/bin/kill", "-0", String(pid)], { timeoutMs: 5000 });
+  return result.exitCode === 0;
+}
+
+async function waitForProcessesToExit(pids: number[], timeoutMs: number): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs;
+  let running = pids;
+
+  while (running.length > 0 && Date.now() < deadline) {
+    await delay(100);
+    running = (
+      await Promise.all(
+        running.map(async (pid) => ({
+          pid,
+          running: await processIsRunning(pid),
+        })),
+      )
+    )
+      .filter((entry) => entry.running)
+      .map((entry) => entry.pid);
+  }
+
+  return running;
+}
+
+async function stopRunningMacApp(app: string, status = createLiveStatus()): Promise<void> {
+  const pids = await macAppProcessIds(app);
+  if (pids.length === 0) return;
+
+  status.set(`Stopping existing dev app ${pids.join(", ")}`);
+  const terminate = await runCommand(["/bin/kill", ...pids.map(String)], { timeoutMs: 10000 });
+  if (terminate.exitCode !== 0) {
+    status.clear();
+    throw new Error((terminate.stderr || terminate.stdout).trim() || "kill failed.");
+  }
+
+  const stillRunning = await waitForProcessesToExit(pids, 5000);
+  if (stillRunning.length > 0) {
+    const forceKill = await runCommand(["/bin/kill", "-KILL", ...stillRunning.map(String)], { timeoutMs: 10000 });
+    if (forceKill.exitCode !== 0) {
+      status.clear();
+      throw new Error((forceKill.stderr || forceKill.stdout).trim() || "kill -KILL failed.");
+    }
+    await waitForProcessesToExit(stillRunning, 2000);
+  }
+
+  status.clear();
+}
+
+async function launchMacApp(app: string, status = createLiveStatus()): Promise<void> {
+  await stopRunningMacApp(app, status);
+  status.set("Launching on this Mac");
+  const result = await runCommand(["/usr/bin/open", "-n", app], { timeoutMs: 60000 });
+  status.clear();
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout).trim() || "open failed.");
+  }
+}
+
 async function run(options: CliOptions): Promise<void> {
   let config = readConfig();
   if (!hasRunConfig(config, options)) {
-    config = await configureProject();
+    await configureProject(options);
+    return;
   }
 
   const target = resolveTarget(config, options);
   const scheme = resolveScheme(config, options);
-  const device = resolveDevice(config, options);
+  const destination = resolveBuildDestination(config, options);
   const derivedDataPath = options.derivedData ?? config.derivedDataPath ?? DEFAULT_DERIVED_DATA;
 
   const nextConfig: DinggyConfig = {
-    device: {
-      id: device.id,
-      name: device.name,
-      platform: device.platform,
-    },
+    ...(config.device ? { device: config.device } : {}),
+    platform: destination.platform,
     scheme,
     derivedDataPath,
     [target.kind]: target.path,
   };
+  if (destination.platform === "ios") {
+    nextConfig.device = {
+      id: destination.device.id,
+      name: destination.device.name,
+      platform: destination.device.platform,
+    };
+  }
   writeConfig(nextConfig);
 
   ensureDir(dirname(derivedDataPath));
@@ -1200,29 +1403,41 @@ async function run(options: CliOptions): Promise<void> {
 
   try {
     failedPhase = "build";
-    await measurePhase(timings, "build", () => buildApp(target, scheme, device, derivedDataPath));
+    await measurePhase(timings, "build", () => buildApp(target, scheme, destination, derivedDataPath));
 
     failedPhase = "resolve-app";
-    const builtApp = await resolveBuiltAppPath(target, scheme, device, nextConfig);
+    const builtApp = await resolveBuiltAppPath(target, scheme, destination, nextConfig);
     const status = createLiveStatus();
 
-    failedPhase = "install";
-    await measurePhase(timings, "install", () => installApp(device, builtApp, status));
+    let bundleId: string | null;
+    if (destination.platform === "ios") {
+      failedPhase = "bundle-id";
+      bundleId = await bundleIdentifier(builtApp);
+    } else {
+      bundleId = await optionalBundleIdentifier(builtApp);
+    }
 
-    failedPhase = "bundle-id";
-    const bundleId = await bundleIdentifier(builtApp);
+    if (destination.platform === "ios") {
+      failedPhase = "install";
+      await measurePhase(timings, "install", () => installApp(destination.device, builtApp, status));
+    }
 
     if (options.launch) {
       failedPhase = "launch";
-      await measurePhase(timings, "launch", () => launchApp(device, bundleId, status));
+      if (destination.platform === "ios") {
+        await measurePhase(timings, "launch", () => launchApp(destination.device, requireBundleIdentifier(bundleId), status));
+      } else {
+        await measurePhase(timings, "launch", () => launchMacApp(builtApp, status));
+      }
       printRunLine(kleur.bold(`✓ App Launched in ${formatDuration(Date.now() - runStartedAt)} ${launchEmoji()}`));
     } else {
-      printRunLine(styles.success(kleur.bold(`✓ App Installed in ${formatDuration(Date.now() - runStartedAt)}`)));
+      const action = destination.platform === "ios" ? "Installed" : "Built";
+      printRunLine(styles.success(kleur.bold(`✓ App ${action} in ${formatDuration(Date.now() - runStartedAt)}`)));
     }
 
     failedPhase = undefined;
-    printRunDetail("Bundle ID", bundleId);
-    printRunDetail("Target", device.name);
+    if (bundleId) printRunDetail("Bundle ID", bundleId);
+    printRunDetail("Target", buildDestinationName(destination));
   } catch (error) {
     didError = true;
     throw error;
@@ -1322,12 +1537,15 @@ function printInfo(options: CliOptions): void {
     : config.project
       ? `${config.project} ${styles.muted("(project)")}`
       : styles.muted("not configured");
+  const platform = config.platform ?? "ios";
   const device = config.device
     ? `${config.device.name ?? config.device.id} ${styles.muted(`(${config.device.id})`)}`
     : styles.muted("not configured");
 
   console.log(`${styles.title("Project Config")} ${styles.muted(CONFIG_PATH)}`);
-  printInfoDetail("Device", device);
+  printInfoDetail("Platform", platform === "macos" ? "macOS" : "iOS");
+  if (platform === "ios") printInfoDetail("Device", device);
+  if (platform === "macos") printInfoDetail("Device", styles.muted("not used"));
   printInfoDetail("Target", target);
   printInfoDetail("Scheme", config.scheme ?? styles.muted("not configured"));
   printInfoDetail("DerivedData", `${derivedDataPath} ${styles.muted(formatBytes(derivedDataStats.bytes))}`);
@@ -1435,7 +1653,7 @@ async function main(): Promise<void> {
       updateConfig(options);
       return;
     }
-    await configureProject();
+    await configureProject(options);
     return;
   }
 

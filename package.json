@@ -1,7 +1,7 @@
 {
   "name": "dinggy",
   "version": "0.1.0",
-  "description": "Run iOS apps on real devices from the command line.",
+  "description": "Run Apple apps from the command line.",
   "type": "module",
   "bin": {
     "dinggy": "src/index.ts"

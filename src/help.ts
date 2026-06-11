@@ -33,14 +33,15 @@ export function printMainHelp(): void {
   printRow("dinggy clean [--force]", commandSyntax(["dinggy", "clean"], "[--force]"), "Clean build cache and build logs");
   console.log("");
   console.log(`${styles.label("Commands")}:`);
-  printRow("run [options]", commandSyntax(["run"], "[options]"), "Build, install, and launch on configured device");
+  printRow("run [options]", commandSyntax(["run"], "[options]"), "Build and launch on configured target");
   printRow("config [options]", commandSyntax(["config"], "[options]"), "Update project config");
   printRow("clean [--force]", commandSyntax(["clean"], "[--force]"), "Clean build cache and logs");
   printRow("info [--json]", commandSyntax(["info"], "[--json]"), "Print project config and performance");
   printRow("devices [--json]", commandSyntax(["devices"], "[--json]"), "List available devices");
   console.log("");
   console.log(`${styles.label("Options")}:`);
-  printRow("--no-launch", optionSyntax("--no-launch"), "Build and install without launching");
+  printRow("--no-launch", optionSyntax("--no-launch"), "Build without launching");
+  printRow("--platform <ios|macos>", optionSyntax("--platform", "<ios|macos>"), "App platform for run/config");
   printRow("--device <id>", optionSyntax("--device", "<id>"), "Device identifier for run/config");
   printRow("--scheme <name>", optionSyntax("--scheme", "<name>"), "Xcode scheme for run/config");
   printRow("--workspace <path>", optionSyntax("--workspace", "<path>"), "Xcode workspace for run/config");
