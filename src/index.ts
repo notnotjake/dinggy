@@ -1544,7 +1544,7 @@ function printInfo(options: CliOptions): void {
   console.log(`${styles.title("Project Config")} ${styles.muted(CONFIG_PATH)}`);
   printInfoDetail("Platform", platform === "macos" ? "macOS" : "iOS");
   if (platform === "ios") printInfoDetail("Device", device);
-  if (platform === "macos") printInfoDetail("Device", styles.muted("not used"));
+  if (platform === "macos") printInfoDetail("Device", "this Mac");
   printInfoDetail("Target", target);
   printInfoDetail("Scheme", config.scheme ?? styles.muted("not configured"));
   printInfoDetail("DerivedData", `${derivedDataPath} ${styles.muted(formatBytes(derivedDataStats.bytes))}`);
